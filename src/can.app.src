@@ -1,0 +1,9 @@
+{application, can,
+ [{description, "CAN"},
+  {vsn, "%VSN%"},
+  {modules, [can, can_app, can_sup, can_usb, can_udp, can_router]},
+  {registered, [can_router]},
+  {mod,{can_app,[]}},
+  {env, []},
+  {applications,[kernel,stdlib]}
+  ]}.
