@@ -1,58 +1,65 @@
 %% -*- erlang -*-
 %%
 %% Generate by: 
-%% >  eapi:erlang("can_sock.api", "src/can_sock").
-%% >  eapi:erlang("can_sock.api", "c_src/can_sock").
+%% >  eapi:erlang("can_sock.api", "src/can_sock_drv").
+%% >  eapi:c("can_sock.api", "c_src/can_sock").
 %%
 %% Socket CAN interface
 
 %% Function prefix for implement functions
 {c_function_prefix, "can_sock_drv_impl"}.
 {c_symbol_prefix, "can_sock_drv"}.
-%% {c_include, "\"raw/can.h\""}.
+
+{erl_include, "\"../include/can.hrl\""}.
 
 {erl_symbol_prefix, "can_sock_drv"}.
-{erl_default_interface, command}.
+{erl_default_interface, control}.
+{erl_app_name, "can"}.
+{erl_srv_name, "can_sock_drv"}.
+{erl_port_name, "can_sock_prt"}.
+{erl_reg_name,  "can_sock_reg"}.
+{erl_driver_name, "can_sock_drv"}.
 
-%% {erl_include, "\"../include/can_sock_drv.hrl\""}.
-
-{struct, can_frame_t,
-  [{uint32_t, id},       %% CANID
-   {boolean_t,   rtr},      %% RTR frame
-   {boolean_t,   ext},      %% EXTended (29-bit) id
-   {int,      intf},     %% interface number
-   {uint8_t,  len},
-   {binary_t, data}]}.
+%% define in can.hrl (structure internal C name is i_can_frame)
+{struct,[intern],can_frame,
+ [{uint32_t,  id},       %% CANID
+  {boolean_t, rtr},      %% RTR frame
+  {boolean_t, ext},      %% EXTended (29-bit) id
+  {int,       intf},     %% interface number
+  {uint8_t,   len},      %% Data length
+  {binary_t,  data},     %% Binary data
+  {int,       ts}        %% Time stamp 
+ ]}.
 
 {typedef, ok,     {const, atom_t, ok}}.
 {typedef, void,   {const, atom_t, ok}}.
 {typedef, error,  {tuple,[{const,atom_t,error},atom_t]}}.
 
-{function,[control],{union,[{tuple,[ok,string_t]}, error]},
+{function, {union,[{tuple,[ok,string_t]}, error]},
  ifname, [{int,index}]}.
 
-{function,[control],{union,[{tuple,[ok,int]}, error]},
+{function, {union,[{tuple,[ok,int]}, error]},
  ifindex, [{string_t,name}]}.
 
 %% Set error frame mask (default: 0) = no error frames
-{function,[control],{union,[ok,error]},
+{function, {union,[ok,error]},
  set_error_filter, [{uint32_t, mask}]}.
 
 %% Loopback message to local applications (default: on)
-{function,[control],{union,[ok,error]},
+{function, {union,[ok,error]},
  set_loopback, [{boolean_t, enable}]}.
 
 %% Recive messages on RX sent by TX (default: off)
-{function,[control],{union,[ok,error]},
+{function, {union,[ok,error]},
  recv_own_messages, [{boolean_t, enable}]}.
 
 %% Bind CAN socket to index (from ifindex) 0=any
-{function,[control],{union,[ok,error]},
+{function,{union,[ok,error]},
  bind, [{int, index}]}.
 
-%% send (or sendto when intf !=0, intf != bound )
+%% send (or sendto when index !=0 )
 {function,[command],{union,[ok,error]},
- send, [{can_frame_t, frame}]}.
+ send, [{int,index},{can_frame, frame}]}.
 
 
 

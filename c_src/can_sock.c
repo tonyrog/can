@@ -2,14 +2,17 @@
 #include "eapi_drv.h"
 #include "can_sock.h"
 
-int d_struct_can_frame_t(eapi_ctx_t* ctx, cbuf_t* c_in, struct can_frame_t *ptr)
+int d_struct_i_can_frame(eapi_ctx_t* ctx, cbuf_t* c_in, struct i_can_frame *ptr)
 {
+    uint32_t d_size;
+    cbuf_get_uint32(c_in,&d_size);
   cbuf_get_uint32(c_in,&ptr->id);
   cbuf_get_boolean(c_in,&ptr->rtr);
   cbuf_get_boolean(c_in,&ptr->ext);
   cbuf_get_int(c_in,&ptr->intf);
   cbuf_get_uint8(c_in,&ptr->len);
   cbuf_get_nbinary(c_in,&ptr->data);
+  cbuf_get_int(c_in,&ptr->ts);
   return 0;
 }
 
@@ -53,9 +56,12 @@ int eapi_dispatch(eapi_ctx_t* ctx, unsigned int cmd, cbuf_t* c_in, cbuf_t* c_out
     break;
   }
   case CAN_SOCK_DRV_CMD_SEND: {
-    struct can_frame_t frame;
-    d_struct_can_frame_t(ctx,c_in,&frame);
-    can_sock_drv_impl_send(ctx,c_out,&frame);
+    int index;
+    struct i_can_frame frame;
+    cbuf_get_int(c_in,&index);
+    d_struct_i_can_frame(ctx,c_in,&frame);
+    printf("can_sock: ext=%d, rtr=%d\r\n",  frame.ext, frame.rtr);
+    can_sock_drv_impl_send(ctx,c_out,index,&frame);
     break;
   }
   default:

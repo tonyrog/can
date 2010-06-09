@@ -100,6 +100,7 @@ static void can_sock_init(ErlDrvData d)
 
     dctx = (can_ctx_t*) driver_alloc(sizeof (can_ctx_t));
     dctx->s = socket(PF_CAN, SOCK_RAW, CAN_RAW);
+    // FIXME: set non blocking
     dctx->b = 0;
     ctx->user_data = dctx;
 }
@@ -129,6 +130,49 @@ DRIVER_INIT(can_sock_drv)
     return (ErlDrvEntry*) &can_sock_drv_entry;
 }
 
+void can_sock_drv_impl_set_loopback(eapi_ctx_t* ctx,cbuf_t* c_out,
+				    uint8_t enable)
+{
+    can_ctx_t* dctx = (can_ctx_t*) ctx->user_data;
+    int value = enable;
+    int r;
+
+    r=setsockopt(dctx->s,SOL_CAN_RAW,CAN_RAW_LOOPBACK,&value,sizeof(value));
+    if (r < 0)
+	put_error(c_out, erl_errno_id(errno));
+    else
+	put_ok(c_out);    
+}
+
+void can_sock_drv_impl_set_error_filter(eapi_ctx_t* ctx,cbuf_t* c_out,
+					uint32_t mask)
+{
+    can_ctx_t* dctx = (can_ctx_t*) ctx->user_data;
+    can_err_mask_t m = (can_err_mask_t) mask;
+    int r;
+
+    r=setsockopt(dctx->s,SOL_CAN_RAW,CAN_RAW_ERR_FILTER,&m,sizeof(m));
+    if (r < 0)
+	put_error(c_out, erl_errno_id(errno));
+    else
+	put_ok(c_out);    
+}
+
+void can_sock_drv_impl_recv_own_messages(eapi_ctx_t* ctx,cbuf_t* c_out,
+					 uint8_t enable)
+{
+    can_ctx_t* dctx = (can_ctx_t*) ctx->user_data;
+    int value = enable;
+    int r;
+
+    r=setsockopt(dctx->s,SOL_CAN_RAW,CAN_RAW_RECV_OWN_MSGS,
+		   &value,sizeof(value));
+    if (r < 0)
+	put_error(c_out, erl_errno_id(errno));
+    else
+	put_ok(c_out);    
+}
+
 void can_sock_drv_impl_ifname(eapi_ctx_t* ctx,cbuf_t* c_out,int index)
 {
     can_ctx_t* dctx = (can_ctx_t*) ctx->user_data;
@@ -139,7 +183,7 @@ void can_sock_drv_impl_ifname(eapi_ctx_t* ctx,cbuf_t* c_out,int index)
     else {
 	ifr.ifr_ifindex = index;
 	if (ioctl(dctx->s, SIOCGIFNAME, &ifr) < 0)
-	    put_error(c_out, "enoent"); // FIXME: posixname
+	    put_error(c_out, erl_errno_id(errno));
 	else {
 	    cbuf_put_tuple_begin(c_out, 2);
 	    cbuf_put_tag_ok(c_out);
@@ -162,6 +206,8 @@ void can_sock_drv_impl_ifindex(eapi_ctx_t* ctx,cbuf_t* c_out,eapi_string_t name)
 	put_error(c_out, erl_errno_id(errno));
     else
 	put_i32(c_out, ifr.ifr_ifindex); // return index
+    // FIXME: cleanup in dispatcher!!!
+    free(name.buf);
 }
 
 
@@ -200,30 +246,34 @@ int send_frame(can_ctx_t* dctx, x_can_frame* frame)
 }    
 
 void can_sock_drv_impl_send(eapi_ctx_t* ctx,cbuf_t* c_out,
-			    struct can_frame_t* frame)
+			    int index, struct i_can_frame* iframe)
 {
     can_ctx_t* dctx = (can_ctx_t*) ctx->user_data;
     x_can_frame xframe;
-    size_t len = frame->data.len; // argument length
+    size_t len = iframe->data.len; // argument length
 
+    // printf("can_sock_drv_impl_send: id=%d, len=%d ext=%d, rtr=%d\n",
+    //   iframe->id, iframe->len, iframe->ext, iframe->rtr);
     if (len > 8)
 	put_error(c_out, "badarg");
-    else if ((frame->intf == 0) && (dctx->b == 0))
+    else if ((index == 0) && (dctx->b == 0))
 	put_error(c_out, erl_errno_id(ENOTCONN));
     else {
-	uint32_t id = frame->id;
-	uint8_t* ptr = (uint8_t*)frame->data.bin->orig_bytes+frame->data.offset;
+	uint32_t id = iframe->id;
+	uint8_t* ptr = (uint8_t*)iframe->data.bin->orig_bytes+
+	    iframe->data.offset;
 	int i;
 
-	if (frame->ext) id |= CAN_EFF_FLAG;
-	if (frame->rtr) id |= CAN_RTR_FLAG;
-	xframe.i = frame->intf;
+	if (iframe->ext) id |= CAN_EFF_FLAG;
+	if (iframe->rtr) id |= CAN_RTR_FLAG;
+	xframe.i = index;
 	xframe.f.can_id = id;
-	xframe.f.can_dlc = frame->len & 0xF;
+	xframe.f.can_dlc = iframe->len & 0xF;
 	memcpy(xframe.f.data, ptr, len);
 	for (i = len; i < 8; i++)
 	    xframe.f.data[i] = 0;
-
+	
+	// FIXME: drop packets when full! (deq old, enq new)
 	if (driver_sizeq(ctx->port) == 0) {
 	    int r = send_frame(dctx, &xframe);
 	    if ((r < 0) && (errno == EAGAIN)) {
@@ -231,14 +281,18 @@ void can_sock_drv_impl_send(eapi_ctx_t* ctx,cbuf_t* c_out,
 		driver_select(ctx->port,(ErlDrvEvent)dctx->s,ERL_DRV_WRITE,1);
 		put_ok(c_out);
 	    }
-	    else
+	    else if (r < 0)
 		put_error(c_out, erl_errno_id(errno));
+	    else
+		put_ok(c_out);
 	}
 	else {
 	    driver_enq(ctx->port, (char*) &xframe, sizeof(xframe));
 	    put_ok(c_out);
 	}
     }
+    // FIXME: dealloc binary in dispatcher
+    driver_free_binary(iframe->data.bin);
 }
 
 // Read a can_frame from the socket
@@ -251,33 +305,44 @@ static void can_sock_ready_input(ErlDrvData data, ErlDrvEvent event)
     can_ctx_t* dctx = (can_ctx_t*) ctx->user_data;
     struct sockaddr_can addr;
     struct can_frame frame;
-    size_t len;
+    size_t len = sizeof(addr);
 
+    // printf("can_sock_ready_input\r\n");
     if (recvfrom(dctx->s, &frame, sizeof(frame),
 		 0, (struct sockaddr*) &addr, &len) == sizeof(frame)) {
 	cbuf_t     reply;
-	cbuf_init(&reply, 0, 0, 0, CBUF_FLAG_BINARY | CBUF_FLAG_PUT_TRM, 0);
-	cbuf_put_begin(&reply);
+	size_t     n;
 
-	cbuf_put_tuple_begin(&reply, 3);
+	cbuf_init(&reply, 0, 0, 0, CBUF_FLAG_PUT_TRM, 0);
+
+	cbuf_put_begin(&reply);  // put response header
+
+	// Format as: {Port,{data,#can_frame{}}}
+	cbuf_put_tuple_begin(&reply, 2);
+	trm_put_2(&reply, ERL_DRV_PORT, driver_mk_port(ctx->port));
+	cbuf_put_tuple_begin(&reply, 2);
 	cbuf_put_atom(&reply, "data");
-	trm_put_2(&reply, ERL_DRV_PORT, (ErlDrvTermData)ctx->port); // special!
+
 	cbuf_put_tuple_begin(&reply, 8);
 	cbuf_put_atom(&reply, "can_frame");
 	if (frame.can_id & CAN_EFF_FLAG)
 	    cbuf_put_uint32(&reply, (frame.can_id &  CAN_EFF_MASK));
 	else
 	    cbuf_put_uint32(&reply, (frame.can_id &  CAN_SFF_MASK));
-	cbuf_put_boolean(&reply, frame.can_id & CAN_RTR_FLAG);
-	cbuf_put_boolean(&reply, frame.can_id & CAN_EFF_FLAG);
+	cbuf_put_boolean(&reply, ((frame.can_id & CAN_RTR_FLAG) != 0));
+	cbuf_put_boolean(&reply, ((frame.can_id & CAN_EFF_FLAG) != 0));
 	cbuf_put_int32(&reply, addr.can_ifindex);
 	cbuf_put_int8(&reply, frame.can_dlc);
 	cbuf_put_binary(&reply, frame.data, (frame.can_dlc & 0xf));
 	cbuf_put_int32(&reply, 0); // fixme timestamp
 	cbuf_put_tuple_end(&reply, 8);
-	cbuf_put_tuple_end(&reply, 3);
-	driver_output_term(ctx->port, (ErlDrvTermData*)reply.v[0].base,
-			   reply.v[0].len/sizeof(ErlDrvTermData));
+
+	cbuf_put_tuple_end(&reply, 2);
+	cbuf_put_tuple_end(&reply, 2);
+	cbuf_put_end(&reply);
+
+	n = reply.v[0].len/sizeof(ErlDrvTermData);
+	driver_output_term(ctx->port, (ErlDrvTermData*)reply.v[0].base, n);
 	cbuf_final(&reply);
     }
 }

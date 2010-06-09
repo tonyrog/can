@@ -12,7 +12,7 @@
 -export([send/6, send_from/7]).
 
 create(ID,Len,Ext,Rtr,Intf,Data) ->
-    create(ID,Len,Ext,Rtr,Intf,Data,undefined).
+    create(ID,Len,Ext,Rtr,Intf,Data,-1).
 
 create(ID,Len,Ext,Rtr,Intf,Data,Ts) ->
     Data1 = if is_binary(Data) -> Data;

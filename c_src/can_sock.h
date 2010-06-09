@@ -2,16 +2,17 @@
 #ifndef __CAN_SOCK_H__
 #define __CAN_SOCK_H__
 
-struct can_frame_t {
+struct i_can_frame {
 uint32_t id;
 uint8_t rtr;
 uint8_t ext;
 int intf;
 uint8_t len;
 eapi_binary_t data;
+int ts;
 
 };
-extern int d_struct_can_frame_t(eapi_ctx_t* ctx, cbuf_t* c_in, struct can_frame_t *ptr);
+extern int d_struct_i_can_frame(eapi_ctx_t* ctx, cbuf_t* c_in, struct i_can_frame *ptr);
 #define CAN_SOCK_DRV_CMD_IFNAME 1
 extern void can_sock_drv_impl_ifname(eapi_ctx_t* ctx,cbuf_t* c_out,int index);
 #define CAN_SOCK_DRV_CMD_IFINDEX 2
@@ -25,5 +26,5 @@ extern void can_sock_drv_impl_recv_own_messages(eapi_ctx_t* ctx,cbuf_t* c_out,ui
 #define CAN_SOCK_DRV_CMD_BIND 6
 extern void can_sock_drv_impl_bind(eapi_ctx_t* ctx,cbuf_t* c_out,int index);
 #define CAN_SOCK_DRV_CMD_SEND 7
-extern void can_sock_drv_impl_send(eapi_ctx_t* ctx,cbuf_t* c_out,struct can_frame_t* frame);
+extern void can_sock_drv_impl_send(eapi_ctx_t* ctx,cbuf_t* c_out,int index,struct i_can_frame* frame);
 #endif
