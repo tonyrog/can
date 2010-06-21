@@ -60,7 +60,7 @@ int eapi_dispatch(eapi_ctx_t* ctx, unsigned int cmd, cbuf_t* c_in, cbuf_t* c_out
     struct i_can_frame frame;
     cbuf_get_int(c_in,&index);
     d_struct_i_can_frame(ctx,c_in,&frame);
-    printf("can_sock: ext=%d, rtr=%d\r\n",  frame.ext, frame.rtr);
+    // printf("can_sock: ext=%d, rtr=%d\r\n",  frame.ext, frame.rtr);
     can_sock_drv_impl_send(ctx,c_out,index,&frame);
     break;
   }

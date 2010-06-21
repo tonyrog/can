@@ -4,14 +4,13 @@ include $(EAPI_DIR)/make/eapi_drv.mk
 CFLAGS += -I $(EAPI_DIR)/include 
 LDFLAGS += 
 
-
+# No prefix for the .so file (just causes problem right now)
 CAN_SOCK_DRV = $(PRIVDIR)/can_sock_drv.so
-
 CAN_SOCK_DRV_OBJS = \
-        $(OBJDIR)/can_sock.o \
-        $(OBJDIR)/can_sock_drv.o
+        $(OBJDIR)/$(EAPI_PFX)can_sock.o \
+        $(OBJDIR)/$(EAPI_PFX)can_sock_drv.o
 
-EAPI_LIB = $(EAPI_DIR)/lib/$(TYPE)/eapi_drv.a
+EAPI_LIB = $(EAPI_DIR)/lib/$(TYPE)/$(EAPI_PFX)eapi_drv.a
 
 all:
 	$(MAKE) driver TYPE=debug
@@ -35,14 +34,15 @@ driver: $(CAN_SOCK_DRV)
 depend:
 
 clean_internal:
-	rm -f $(OBJDIR)/*.o
+	rm -f $(CAN_SOCK_DRV)
+	rm -f $(CAN_SOCK_DRV_OBJS)
 
 $(CAN_SOCK_DRV): $(CAN_SOCK_DRV_OBJS)
 	$(LD_SHARED) -o $@ $(CAN_SOCK_DRV_OBJS) $(EAPI_LIB) $(LDFLAGS)
 
-$(OBJDIR)/can_sock.o: $(EAPI_DIR)/include/eapi_drv.h
+$(OBJDIR)/$(EAPI_PFX)can_sock.o: $(EAPI_DIR)/include/eapi_drv.h
 
-$(OBJDIR)/can_sock_drv.o: $(EAPI_DIR)/include/eapi_drv.h
+$(OBJDIR)/$(EAPI_PFX)can_sock_drv.o: $(EAPI_DIR)/include/eapi_drv.h
 
-$(OBJDIR)/%.o: %.c
+$(OBJDIR)/$(EAPI_PFX)%.o: %.c
 	$(CC) -c -o $@ $(CFLAGS) -I$(ERL_C_INCLUDE_DIR) $<
