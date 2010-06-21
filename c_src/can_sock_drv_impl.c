@@ -34,7 +34,7 @@
 #endif
 
 #include "eapi_drv.h"
-#include "can_sock.h"
+#include "can_sock_drv.h"
 
 static ErlDrvEntry can_sock_drv_entry;
 
