@@ -27,7 +27,8 @@
 	  ifaddr,      %% interface address (any, {192,168,1,4} ...)
 	  mport,       %% port number used
 	  oport,       %% output port number used
-	  stat         %% counter dictionary
+	  stat,        %% counter dictionary
+	  fs           %% can_router:fs_new()
 	 }).
 
 -include("../include/can.hrl").
@@ -98,7 +99,8 @@ init([Id, MAddr]) ->
 			    {ok,#s{ in=In, mport=MPort,
 				    stat = dict:new(),
 				    out=Out, oport=OutPort,
-				    maddr=MAddr, id=ID  }};
+				    maddr=MAddr, id=ID,
+				    fs=can_router:fs_new() }};
 			Error ->
 			    {stop, Error}
 		    end;
@@ -123,9 +125,22 @@ init([Id, MAddr]) ->
 handle_call({send,Mesg}, _From, S) ->
     {Reply,S1} = send_message(Mesg,S),
     {reply, Reply, S1};
+
 handle_call(statistics,_From,S) ->
     Stat = dict:to_list(S#s.stat),
     {reply,{ok,Stat}, S};
+handle_call({add_filter,F}, _From, S) ->
+    {I,Fs} = can_router:fs_add(F,S#s.fs),
+    {reply, {ok,I}, S#s { fs=Fs }};
+handle_call({del_filter,I}, _From, S) ->
+    {Reply,Fs} = can_router:fs_del(I,S#s.fs),
+    {reply, Reply, S#s { fs=Fs }};
+handle_call({get_filter,I}, _From, S) ->
+    Reply = can_router:fs_get(I,S#s.fs),
+    {reply, Reply, S};  
+handle_call(list_filter, _From, S) ->
+    Reply = can_router:fs_list(S#s.fs),
+    {reply, Reply, S};
 handle_call(_Request, _From, S) ->
     {reply, {error,bad_call}, S}.
 
@@ -138,8 +153,31 @@ handle_call(_Request, _From, S) ->
 handle_cast({send,Mesg}, S) ->
     {_, S1} = send_message(Mesg, S),
     {noreply, S1};
+
+handle_cast({statistics,From},S) ->
+    Stat = dict:to_list(S#s.stat),
+    gen_server:reply(From, {ok,Stat}),
+    {noreply, S};
+handle_cast({add_filter,From,F}, S) ->
+    {I,Fs} = can_router:fs_add(F,S#s.fs),
+    gen_server:reply(From, {ok,I}),
+    {noreply, S#s { fs=Fs }};
+handle_cast({del_filter,From,I}, S) ->
+    {Reply,Fs} = can_router:fs_del(I,S#s.fs),
+    gen_server:reply(From, Reply),
+    {noreply, S#s { fs=Fs }};
+handle_cast({get_filter,From,I}, S) ->
+    Reply = can_router:fs_get(I,S#s.fs),
+    gen_server:reply(From, Reply),
+    {noreply, S};  
+handle_cast({list_filter,From}, S) ->
+    Reply = can_router:fs_list(S#s.fs),
+    gen_server:reply(From, Reply),
+    {noreply, S};
 handle_cast(_Mesg, S) ->
+    ?dbg("can_udp: handle_cast: ~p\n", [_Mesg]),
     {noreply, S}.
+
 
 %%--------------------------------------------------------------------
 %% Function: handle_info(Info, State) -> {noreply, State} |
@@ -157,27 +195,24 @@ handle_info({udp,U,_Addr,Port,Data}, S) when S#s.in == U ->
 		<<CId:32/little,FLen:32/little,CData:8/binary>> ->
 		    ?dbg("CUd=~8.16.0B, FLen=~8.16.0B, CData=~p\n",
 			 [CId,FLen,CData]),
-		    case catch can:create(CId,FLen band 16#f,
-					  ((FLen bsr 31) band 1) == 1,
-					  ((FLen bsr 30) band 1) == 1,
-					  S#s.id,
-					  CData) of
+		    Ts = -1,  %% add this option!
+		    case catch can:create(CId,FLen band 16#f,S#s.id,CData,Ts) of
 			{'EXIT', {Reason,_}} when is_atom(Reason) ->
 			    {noreply, ierr(Reason,S)};
 			{'EXIT', Reason} when is_atom(Reason) ->
 			    {noreply, ierr(Reason,S)};
 			{'EXIT', _Reason} ->
-			    {noreply, ierr(?CAN_ERROR_CORRUPT,S)};
+			    {noreply, ierr(?can_error_corrupt,S)};
 			M when is_record(M,can_frame) ->
-			    can_router:cast(M),
-			    {noreply, in(S)};
+			    S1 = input(M, S),
+			    {noreply, S1};
 			_Other ->
 			    ?dbg("CAN_UDP: Got ~p\n", [_Other]),
 			    {noreply, S}
 		    end;
 		_ ->
 		    ?dbg("CAN_UDP: Got ~p\n", [Data]),
-		    {noreply, ierr(?CAN_ERROR_CORRUPT,S)}
+		    {noreply, ierr(?can_error_corrupt,S)}
 	    end
     end;
 
@@ -212,24 +247,21 @@ send_message(Mesg, S) when is_record(Mesg,can_frame) ->
     if is_binary(Mesg#can_frame.data) ->
 	    send_bin_message(Mesg, Mesg#can_frame.data, S);
        true ->
-	    oerr(?CAN_ERROR_DATA,S)
+	    output_error(?can_error_data,S)
     end;
 send_message(_Mesg, S) ->
-    oerr(?CAN_ERROR_DATA,S).
+    output_error(?can_error_data,S).
 
 
 send_bin_message(Mesg, Bin, S) when byte_size(Bin) =< 8 ->
     send_message(Mesg#can_frame.id,
 		 Mesg#can_frame.len,
-		 (if Mesg#can_frame.ext -> ?EXT_BIT; true -> 0 end),
-		 (if Mesg#can_frame.rtr -> ?RTR_BIT; true -> 0 end),
 		 Bin,
 		 S);
 send_bin_message(_Mesg, _Bin, S) ->
-    oerr(?CAN_ERROR_DATA_TOO_LARGE,S).
+    output_error(?can_error_data_too_large,S).
 
-send_message(ID, Len, Ext, Rtr, Data, S) ->
-    FS = Len bor Ext bor Rtr,
+send_message(ID, Len, Data, S) ->
     Bin = 
 	case byte_size(Data) of 
 	    0 -> <<0,0,0,0,0,0,0,0>>;
@@ -237,55 +269,43 @@ send_message(ID, Len, Ext, Rtr, Data, S) ->
 	    Bsz ->
 		(<< Data/binary, 0:(8-(Bsz rem 8))/unit:8 >>)
 	end,
-    case gen_udp:send(S#s.out, S#s.maddr, S#s.mport, 
-		      <<ID:32/little, FS:32/little, Bin/binary>>) of
+    %% Mask ID on output message, remove error bits and bad id bits
+    ID1 = if ?is_can_id_eff(ID) ->
+		  ID band (?CAN_EFF_FLAG bor ?CAN_RTR_FLAG bor ?CAN_EFF_MASK);
+	     true ->
+		  ID band (?CAN_RTR_FLAG bor ?CAN_SFF_MASK)
+	  end,
+    Len1 = Len band 16#f,
+    case gen_udp:send(S#s.out, S#s.maddr, S#s.mport,
+		      <<ID1:32/little, Len1:32/little, Bin/binary>>) of
 	ok ->
-	    {ok,out(S)};
+	    {ok,count(output_frames, S)};
 	_Error ->
 	    ?dbg("gen_udp: failure=~p\n", [_Error]),
-	    oerr(?CAN_ERROR_TRANSMISSION,S)
+	    output_error(?can_error_transmission,S)
     end.
 
 count(Item,S) ->
     Stat = dict:update_counter(Item, 1, S#s.stat),
     S#s { stat = Stat }.
 
+output_error(Reason,S) ->
+    {{error,Reason}, oerr(Reason,S)}.
+
 oerr(Reason,S) ->
     S1 = count(output_error, S),
-    {{error,Reason},count({output_error,Reason}, S1)}.
+    count({output_error,Reason}, S1).
 
 ierr(Reason,S) ->
     S1 = count(input_error, S),
     count({input_error,Reason}, S1).
 
-in(S) ->
-    count(input_frames, S).
-
-out(S) ->
-    count(output_frames, S).
-
-
-%% Find interface address and broadcast address from Addr
-find_ifaddr(any)      -> {{0,0,0,0},{255,255,255,255}};
-find_ifaddr(loopback) -> {{127,0,0,1},{127,255,255,255}};
-find_ifaddr(Addr) ->
-    {ok,List} = inet:getif(),
-    find_ifaddr(Addr,List).
-
-find_ifaddr(Addr, [{A,B,M}|T]) ->
-    case match_ifaddr(Addr, M) of
-	true -> {A,B};
-	false -> find_ifaddr(Addr,T)
-    end;
-find_ifaddr(_Addr, []) ->
-    false.
-
-match_ifaddr({A1,B1,C1,D1},{A2,B2,C2,D2}) ->
-    (A1 band A2 == A1) andalso
-    (B1 band B2 == B1) andalso
-    (C1 band C2 == C1) andalso
-    (D1 band D2 == D1).
-
-
-    
-    
+input(Frame, S) ->
+    case can_router:fs_input(Frame, S#s.fs) of
+	true ->
+	    can_router:input(Frame),
+	    count(input_frames, S);
+	false ->
+	    S1 = count(input_frames, S),
+	    count(filter_frames, S1)
+    end.

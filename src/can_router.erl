@@ -15,9 +15,15 @@
 -export([join/1]).
 -export([attach/0, detach/0]).
 -export([send/1, send_from/2]).
--export([cast/1, cast_from/2]).
+-export([sync_send/1, sync_send_from/2]).
+-export([input/1, input_from/2]).
+-export([add_filter/4, del_filter/2, get_filter/2, list_filter/1]).
 -export([i/0, i/1]).
 -export([statistics/0]).
+
+%% Backend interface
+-export([fs_new/0, fs_add/2, fs_add/3, fs_del/2, fs_get/2, fs_list/1]).
+-export([fs_input/2]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
@@ -35,6 +41,12 @@
 -define(dbg(Fmt,As), ok).
 -endif.
 
+%% Filter structure (also used by backends)
+-record(can_fs,
+	{
+	  next_id = 1,
+	  filter = []  %% [{I,#can_filter{}}]
+	}).
 
 -record(can_if,
 	{
@@ -42,7 +54,7 @@
 	  id,       %% interface id
 	  mon,      %% can app monitor
 	  param     %% match param
-	 }).
+	}).
 
 -record(can_app,
 	{
@@ -57,6 +69,7 @@
 	  apps = [],     %% attached can applications
 	  ifs  = [],     %% joined interfaces
 	  stat_in=0,     %% number of input packets received
+	  stat_err=0,    %% number of error packets received
 	  stat_out=0     %% number of output packets  sent
 	}).
 
@@ -78,48 +91,47 @@ start(Args) ->
     gen_server:start({local, ?SERVER}, ?MODULE, Args, []).
 
 statistics() ->
-    case gen_server:call(?SERVER, interfaces) of
-	{ok, IFs} ->
-	    Stat = foldl(
-		     fun({Id,_Param,Pid},Acc) ->
-			     case gen_server:call(Pid, statistics) of
-				 {ok,Stat} ->
-				     [{Id,Stat} | Acc];
-				 Error ->
-				     [{Id,Error}| Acc]
-			     end
-		     end, [], IFs),
-	    {ok, Stat};
-	Error ->
-	    Error
-    end.
+    IFs = gen_server:call(?SERVER, interfaces),
+    foldl(
+      fun(If,Acc) ->
+	      case gen_server:call(If#can_if.pid, statistics) of
+		  {ok,Stat} ->
+		      [{If#can_if.id,Stat} | Acc];
+		  Error ->
+		      [{If#can_if.id,Error}| Acc]
+	      end
+      end, [], IFs).
 
 i() ->
-    {ok,IFs} =  gen_server:call(?SERVER, interfaces),
+    IFs = gen_server:call(?SERVER, interfaces),
     lists:foreach(
-      fun({Id,Param,Pid}) ->    
-	    case gen_server:call(Pid, statistics) of
-		{ok,Stat} ->
-		    print_stat(Id, Param, Stat);
-		Error ->
-		    io:format("~2w: ~p\n  error = ~p\n", [Id,Param,Error])
-	    end
-      end, IFs).
+      fun(If) ->
+	      case gen_server:call(If#can_if.pid, statistics) of
+		  {ok,Stat} ->
+		      print_stat(If, Stat);
+		  Error ->
+		      io:format("~2w: ~p\n  error = ~p\n",
+				[If#can_if.id,If#can_if.param,Error])
+	      end
+      end, lists:keysort(#can_if.id, IFs)).
 
 i(Id) ->
-    {ok,IFs} =  gen_server:call(?SERVER, interfaces),
-    case lists:keyseach(Id, 1, IFs) of
-	{value,{Id,Param,Pid}} ->
-	    case gen_server:call(Pid, statistics) of
+    case gen_server:call(?SERVER, {interface,Id}) of
+	{ok,If} ->
+	    case gen_server:call(If#can_if.pid, statistics) of
 		{ok,Stat} ->
-		    print_stat(Id, Param, Stat);
+		    print_stat(If, Stat);
 		Error ->
-		    io:format("~2w: ~p\n  error = ~p\n", [Id,Param,Error])
-	    end
+		    io:format("~2w: ~p\n  error = ~p\n",
+			      [If#can_if.id,If#can_if.param,Error])
+
+	    end;
+	{error,enoent} ->
+	    io:format("~2w: no such interface\n", [Id])
     end.
 
-print_stat(Id, Param, Stat) ->
-    io:format("~2w: ~p\n", [Id, Param]),
+print_stat(If, Stat) ->
+    io:format("~2w: ~p\n", [If#can_if.id, If#can_if.param]),
     lists:foreach(
       fun({Counter,Value}) ->
 	      io:format("  ~p: ~w\n", [Counter, Value])
@@ -138,17 +150,37 @@ detach() ->
 join(Params) ->
     gen_server:call(?SERVER, {join, self(), Params}).
 
+add_filter(Intf, Invert, ID, Mask) when 
+      is_boolean(Invert), is_integer(ID), is_integer(Mask) ->
+    gen_server:call(?SERVER, {add_filter, Intf, Invert, ID, Mask}).
+
+del_filter(Intf, I) ->
+    gen_server:call(?SERVER, {del_filter, Intf, I}).
+
+get_filter(Intf, I) ->
+    gen_server:call(?SERVER, {get_filter, Intf, I}).
+
+list_filter(Intf) ->
+    gen_server:call(?SERVER, {list_filter, Intf}).
+
 send(Frame) when is_record(Frame, can_frame) ->
-    gen_server:call(?SERVER, {send, self(), Frame}).
-
-send_from(Pid,Frame) when is_pid(Pid), is_record(Frame, can_frame) ->
-    gen_server:call(?SERVER, {send, Pid, Frame}).
-
-cast(Frame) when is_record(Frame, can_frame) ->
     gen_server:cast(?SERVER, {send, self(), Frame}).
 
-cast_from(Pid,Frame) when is_pid(Pid), is_record(Frame, can_frame) ->
+send_from(Pid,Frame) when is_pid(Pid), is_record(Frame, can_frame) ->
     gen_server:cast(?SERVER, {send, Pid, Frame}).
+
+sync_send(Frame) when is_record(Frame, can_frame) ->
+    gen_server:call(?SERVER, {send, self(), Frame}).
+
+sync_send_from(Pid,Frame) when is_pid(Pid), is_record(Frame, can_frame) ->
+    gen_server:call(?SERVER, {send, Pid, Frame}).
+
+%% Input from  backends
+input(Frame) when is_record(Frame, can_frame) ->
+    gen_server:cast(?SERVER, {input, self(), Frame}).
+
+input_from(Pid,Frame) when is_pid(Pid), is_record(Frame, can_frame) ->
+    gen_server:cast(?SERVER, {input, Pid, Frame}).
 
 %%====================================================================
 %% gen_server callbacks
@@ -183,7 +215,7 @@ handle_call({attach,Pid}, _From, S) when is_pid(Pid) ->
     case lists:keysearch(Pid, #can_app.pid, Apps) of
 	false ->
 	    Mon = erlang:monitor(process, Pid),
-	    %% We may extend app interface someday - now it = 0
+	    %% We may extend app interface someday - now = 0
 	    App = #can_app { pid=Pid, mon=Mon, interface=0 },
 	    Apps1 = [App | Apps],
 	    {reply, ok, S#s { apps = Apps1 }};
@@ -215,10 +247,66 @@ handle_call({join,Pid,Param}, _From, S) ->
 	{value,_} ->
 	    {reply, {error,ealready}, S}
     end;
+handle_call({interface,I}, _From, S) when is_integer(I) ->
+    case lists:keysearch(I, #can_if.id, S#s.ifs) of
+	false ->
+	    {reply, {error,enoent}, S};
+	{value,If} ->
+	    {reply, {ok,If}, S}
+    end;
+handle_call({interface,Param}, _From, S) ->
+    case lists:keysearch(Param, #can_if.param, S#s.ifs) of
+	false ->
+	    {reply, {error,enoent}, S};
+	{value,If} ->
+	    {reply, {ok,If}, S}
+    end;
 handle_call(interfaces, _From, S) ->
-    IFs = map(fun(I) -> {I#can_if.id, I#can_if.param, I#can_if.pid} end,
-	      S#s.ifs),
-    {reply, {ok, IFs}, S};
+    {reply, S#s.ifs, S};
+
+handle_call({add_filter,Intf,Invert,ID,Mask}, From, S) when 
+      is_integer(Intf), is_boolean(Invert), is_integer(ID), is_integer(Mask) ->
+    case lists:keysearch(Intf, #can_if.id, S#s.ifs) of
+	false ->
+	    {reply, {error, enoent}, S};
+	{value,If} ->
+	    ID1 = if Invert ->
+			  ID bor ?CAN_INV_FILTER;
+		     true -> 
+			  ID
+		  end,
+	    F = #can_filter { id=ID1, mask=Mask},
+	    gen_server:cast(If#can_if.pid, {add_filter,From,F}),
+	    {noreply, S}
+    end;
+
+handle_call({del_filter,Intf,I}, From, S) ->
+    case lists:keysearch(Intf, #can_if.id, S#s.ifs) of
+	false ->
+	    {reply, {error, enoent}, S};
+	{value,If} ->
+	    gen_server:cast(If#can_if.pid, {del_filter,From,I}),
+	    {noreply, S}
+    end;
+
+handle_call({get_filter,Intf,I}, From, S) ->
+    case lists:keysearch(Intf, #can_if.id, S#s.ifs) of
+	false ->
+	    {reply, {error, enoent}, S};
+	{value,If} ->
+	    gen_server:cast(If#can_if.pid, {get_filter,From,I}),
+	    {noreply, S}
+    end;
+
+handle_call({list_filter,Intf}, From, S) ->
+    case lists:keysearch(Intf, #can_if.id, S#s.ifs) of
+	false ->
+	    {reply, {error, enoent}, S};
+	{value,If} ->
+	    gen_server:cast(If#can_if.pid, {list_filter,From}),
+	    {noreply,S}
+    end;
+
 handle_call(_Request, _From, S) ->
     {reply, {error, bad_call}, S}.
 
@@ -228,9 +316,18 @@ handle_call(_Request, _From, S) ->
 %%                                      {stop, Reason, State}
 %% Description: Handling cast messages
 %%--------------------------------------------------------------------
+handle_cast({input,Pid,Frame}, S) 
+  when is_pid(Pid),is_record(Frame, can_frame) ->
+    if ?is_can_frame_err(Frame) ->
+	    S1 = error(Pid, Frame, S),
+	    {noreply, S1};
+       true ->
+	    S1 = S#s { stat_in = S#s.stat_in + 1 },
+	    S2 = broadcast(Pid, Frame, S1),
+	    {noreply, S2}
+    end;
 handle_cast({send,Pid,Frame}, S) 
   when is_pid(Pid),is_record(Frame, can_frame) ->
-    %% router received message from some interface or app
     S1 = broadcast(Pid, Frame, S),
     {noreply, S1};
 handle_cast(_Msg, S) ->
@@ -243,18 +340,18 @@ handle_cast(_Msg, S) ->
 %% Description: Handling all non call/cast messages
 %%--------------------------------------------------------------------
 handle_info({'DOWN',_Ref,process,Pid,_Reason},S) ->
-    case lists:keysearch(Pid, #can_app.pid, S#s.apps) of
+    case lists:keytake(Pid, #can_app.pid, S#s.apps) of
 	false ->
-	    case lists:keysearch(Pid, #can_if.pid, S#s.ifs) of
+	    case lists:keytake(Pid, #can_if.pid, S#s.ifs) of
 		false ->
 		    {noreply, S};
-		{value,If} ->
-		    Ifs = S#s.ifs,
-		    {noreply,S#s { ifs = Ifs -- [If] }}
+		{value,_If,Ifs} ->
+		    %% FIXME: Restart?
+		    {noreply,S#s { ifs = Ifs }}
 	    end;
-	{value,App} ->
-	    Apps = S#s.apps,
-	    {noreply,S#s { apps = Apps -- [App] }}
+	{value,_App,Apps} ->
+	    %% FIXME: Restart?
+	    {noreply,S#s { apps = Apps }}
     end;
 handle_info(_Info, S) ->
     {noreply, S}.
@@ -279,6 +376,86 @@ code_change(_OldVsn, S, _Extra) ->
 %%--------------------------------------------------------------------
 %%% Internal functions
 %%--------------------------------------------------------------------
+
+%% fs_xxx functions are normally called from backends
+%% if filter returns true then pass the message through
+%% (a bit strange, but follows the logic from lists:filter/2)
+%%
+
+%% create filter structure
+fs_new() ->
+    #can_fs {}.
+
+%% add filter to filter structure
+fs_add(F, Fs) when is_record(F, can_filter), is_record(Fs, can_fs) ->
+    I = Fs#can_fs.next_id,
+    Filter = Fs#can_fs.filter ++ [{I,F}],
+    {I, Fs#can_fs { filter=Filter, next_id=I+1 }}.
+
+fs_add(I,F,Fs) when is_integer(I), is_record(F,can_filter),
+		    is_record(Fs,can_fs) ->
+    Filter = [{I,F} | Fs#can_fs.filter],
+    NextId = Fs#can_fs.next_id,
+    Fs#can_fs { filter=Filter, next_id=erlang:max(I+1,NextId)}.
+
+%% remove filter from filter structure
+fs_del(F, Fs) when is_record(F, can_filter), is_record(Fs, can_fs) ->
+    case lists:keytake(F, 2, Fs#can_fs.filter) of
+	{value,_FI,Filter} ->
+	    {true, Fs#can_fs { filter=Filter }};
+	false ->
+	    {false, Fs}
+    end;
+fs_del(I, Fs) when is_record(Fs, can_fs) ->
+    case lists:keytake(I, 1, Fs#can_fs.filter) of
+	{value,_FI,Filter} ->
+	    {true, Fs#can_fs { filter=Filter }};
+	false ->
+	    {false, Fs}
+    end.
+
+fs_get(I, Fs) when is_record(Fs, can_fs) ->
+    case lists:keysearch(I, 1, Fs#can_fs.filter) of
+	{value,FI} ->
+	    {ok,FI};
+	false ->
+	    {error, enoent}
+    end.
+
+%% return the filter list [{Num,#can_filter{}}]
+fs_list(Fs) when is_record(Fs, can_fs) ->
+    {ok, Fs#can_fs.filter}.
+
+    
+%% filter a frame
+%% return true for no filtering (pass through)
+%% return false for filtering
+%%
+fs_input(F, Fs) when is_record(F, can_frame), is_record(Fs, can_fs) ->
+    case Fs#can_fs.filter of
+	[] -> true;  %% default to accept all
+	Filter -> filter_(F,Filter)
+    end.
+
+filter_(Frame, [{_I,F}|Fs]) ->
+    Mask = F#can_filter.mask,
+    Cond = (Frame#can_frame.id band Mask) =:= (F#can_filter.id band Mask),
+    if ?is_not_can_id_inv_filter(F#can_filter.id), Cond ->
+	    true;
+       ?is_can_id_inv_filter(F#can_filter.id), not Cond ->
+	    true;
+       true ->
+	    filter_(Frame, Fs)
+    end;
+filter_(_Frame, []) ->
+    false.
+
+%% Error frame handling
+error(_Sender, _Frame, S) ->
+    ?dbg("can_router: error frame = ~p\n", [_Frame]),
+    %% FIXME: send to error handler
+    S1 = S#s { stat_err = S#s.stat_err + 1 },
+    S1.
 
 %% Broadcast a message to applications/simulated can buses
 %% and joined CAN interfaces

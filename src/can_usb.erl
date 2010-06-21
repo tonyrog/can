@@ -22,14 +22,17 @@
 
 -record(s, 
 	{
-	  id,          %% can node id, for sending
-	  sl,          %% serial line port id
-	  device_name, %% device name
-	  baud_rate,   %% baud rate to canusb
-	  can_speed,   %% CAN bus speed
-	  acc = [],    %% accumulator for command replies
-	  buf = <<>>,  %% parse buffer
-	  stat         %% counter dictionary
+	  id,              %% interface id
+	  sl,              %% serial line port id
+	  device_name,     %% device name
+	  baud_rate,       %% baud rate to canusb
+	  can_speed,       %% CAN bus speed
+	  status_interval, %% Check status interval
+	  status_timer,    %% Check status timer
+	  acc = [],        %% accumulator for command replies
+	  buf = <<>>,      %% parse buffer
+	  stat,            %% counter dictionary
+	  fs               %% can_router:fs_new()
 	 }).
 
 -define(SERVER, ?MODULE).
@@ -51,12 +54,19 @@
 %% Some known devices (by me)
 %% /dev/tty.usbserial-LWQ8CA1K   (R550)
 %%
+%% Options:
+%%   {bitrate, Rate}         default 250000 KBit/s
+%%   {status_interval, Tms}  default 1000 = 1s
+%%
 start() ->
-    start(1).
+    start(1,[]).
 
 start(BusId) ->
+    start(BusId,[]).
+
+start(BusId, Opts) ->
     can_router:start(),
-    gen_server:start(?MODULE, [BusId], []).
+    gen_server:start(?MODULE, [BusId,Opts], []).
 
 set_bitrate(Pid, BitRate) ->
     gen_server:call(Pid, {set_bitrate, BitRate}).
@@ -64,25 +74,6 @@ set_bitrate(Pid, BitRate) ->
 get_bitrate(Pid) ->
     gen_server:call(Pid, get_bitrate).
 
-get_status(Pid) ->  %% read error status flags (and clear)
-    case gen_server:call(Pid, {command, "F"}) of
-	{ok, Status} ->
-	    try erlang:list_to_integer(Status, 16) of
-		Code ->
-		    {ok,
-		     ?BITADD(Code,?CAN_ERROR_RECV_FIFO_FULL,recv_fifo_full) ++
-		     ?BITADD(Code,?CAN_ERROR_SEND_FIFO_FULL,send_fifo_full) ++
-		     ?BITADD(Code,?CAN_ERROR_WARNING,warning) ++
-		     ?BITADD(Code,?CAN_ERROR_DATA_OVER_RUN,overrun) ++
-		     ?BITADD(Code,?CAN_ERROR_PASSIVE,passive) ++
-		     ?BITADD(Code,?CAN_ERROR_ARBITRATION_LOST,arbitration_lost) ++
-		     ?BITADD(Code,?CAN_ERROR_BUS,bus_error)}
-	    catch
-		error:_ -> {error, bad_status}
-	    end;
-	Error ->
-	    Error
-    end.
 
 
 get_version(Pid) ->
@@ -126,7 +117,7 @@ disable_timestamp(Pid) ->
 %% Description: Initiates the server
 %%
 %%--------------------------------------------------------------------
-init([Id]) ->
+init([Id,IOpts]) ->
     DeviceName = case os:getenv("CANUSB_DEVICE_" ++ integer_to_list(Id)) of
 		     false -> "/dev/tty.usbserial";
 		     Device -> Device
@@ -135,22 +126,29 @@ init([Id]) ->
 		false -> 115200;
 		Spd -> list_to_integer(Spd)
 	    end,
-    Opts = [binary,{baud,Speed},{buftm,1},{bufsz,128},
-	    {stopb,1},{parity,0},{mode,raw}],
-    case sl:open(DeviceName,Opts) of
+    DOpts = [binary,{baud,Speed},{buftm,1},{bufsz,128},
+	     {stopb,1},{parity,0},{mode,raw}],
+    case sl:open(DeviceName,DOpts) of
 	{ok,SL} ->
 	    ?dbg("CANUSB open: ~s@~w\n", [DeviceName,Speed]),
 	    case can_router:join({usb,DeviceName,Id}) of
 		{ok,ID} ->
 		    ?dbg("CANUSB joined: intf=~w\n", [ID]),
+		    BitRate = proplists:get_value(bitrate,IOpts,250000),
+		    Interval = proplists:get_value(status_interval,IOpts,1000),
+		    Timer = erlang:start_timer(Interval,self(),status),
 		    S = #s { id=ID, sl=SL, 
 			     device_name=DeviceName,
 			     stat = dict:new(),
 			     baud_rate = Speed,
-			     can_speed = 250000 },
+			     can_speed = BitRate,
+			     status_interval = Interval,
+			     status_timer = Timer,
+			     fs=can_router:fs_new()
+			   },
 		    case canusb_sync(S) of
 			true ->
-			    canusb_set_bitrate(S, 250000),
+			    canusb_set_bitrate(S, BitRate),
 			    command_open(S),
 			    {ok, S};
 			Error ->
@@ -194,6 +192,12 @@ handle_call({command,Cmd}, _From, S) ->
 	{Error,S1} ->
 	    {reply, Error, S1}
     end;
+handle_call({add_filter,I,F}, _From, S) ->
+    Fs = can_router:fs_add(I,F,S#s.fs),
+    {reply, ok, S#s { fs=Fs }};
+handle_call({del_filter,I}, _From, S) ->
+    {Reply,Fs} = can_router:fs_del(I,S#s.fs),
+    {reply, Reply, S#s { fs=Fs }};
 handle_call(_Request, _From, S) ->
     {reply, {error,bad_call}, S}.
 
@@ -206,7 +210,29 @@ handle_call(_Request, _From, S) ->
 handle_cast({send,Mesg}, S) ->
     {_, S1} = send_message(Mesg, S),
     {noreply, S1};
+
+handle_cast({statistics,From},S) ->
+    Stat = dict:to_list(S#s.stat),
+    gen_server:reply(From, {ok,Stat}),
+    {noreply, S};
+handle_cast({add_filter,From,F}, S) ->
+    {I,Fs} = can_router:fs_add(F,S#s.fs),
+    gen_server:reply(From, {ok,I}),
+    {noreply, S#s { fs=Fs }};
+handle_cast({del_filter,From,I}, S) ->
+    {Reply,Fs} = can_router:fs_del(I,S#s.fs),
+    gen_server:reply(From, Reply),
+    {noreply, S#s { fs=Fs }};
+handle_cast({get_filter,From,I}, S) ->
+    Reply = can_router:fs_get(I,S#s.fs),
+    gen_server:reply(From, Reply),
+    {noreply, S};  
+handle_cast({list_filter,From}, S) ->
+    Reply = can_router:fs_list(S#s.fs),
+    gen_server:reply(From, Reply),
+    {noreply, S};
 handle_cast(_Mesg, S) ->
+    ?dbg("can_usb: handle_cast: ~p\n", [_Mesg]),
     {noreply, S}.
 
 %%--------------------------------------------------------------------
@@ -221,6 +247,26 @@ handle_info({SL,{data,Data}}, S) when S#s.sl == SL ->
     {_,S1} = parse_all(S#s { buf = NewBuf}),
     ?dbg("can_usb:handle_info: RemainBuf=~p\n", [S1#s.buf]),
     {noreply, S1};
+handle_info({timeout,Ref,status}, S) when Ref =:= S#s.status_timer ->
+    case command(S, "F") of
+	{ok, Status, S1} ->
+	    try erlang:list_to_integer(Status, 16) of
+		0 -> 
+		    {noreply,start_timer(S1)};
+		Code ->
+		    S2 = error_input(Code, S1),
+		    S3 = start_timer(S2),
+		    {noreply,S3}
+	    catch
+		error:Reason ->
+		    io:format("can_usb: status error: ~p\n", [Reason]),
+		    {noreply,start_timer(S1)}
+	    end;
+	{{error,Reason}, S1} ->
+	    io:format("can_usb: status error: ~p\n", [Reason]),
+	    {noreply, start_timer(S1)}
+    end;
+
 handle_info(_Info, S) ->
     {noreply, S}.
     
@@ -245,42 +291,46 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal functions
 %%--------------------------------------------------------------------
 
+start_timer(S) ->
+    Timer = erlang:start_timer(S#s.status_interval,self(),status),
+    S#s { status_timer = Timer }.
+
 send_message(Mesg, S) when is_record(Mesg,can_frame) ->
     if is_binary(Mesg#can_frame.data) ->
 	    send_bin_message(Mesg, Mesg#can_frame.data, S);
        true ->
-	    oerr(?CAN_ERROR_DATA,S)
+	    output_error(?can_error_data,S)
     end;
 send_message(_Mesg, S) ->
-    oerr(?CAN_ERROR_DATA,S).
+    output_error(?can_error_data,S).
 
 send_bin_message(Mesg, Bin, S) when byte_size(Bin) =< 8 ->
     send_message(Mesg#can_frame.id,
 		 Mesg#can_frame.len,
-		 Mesg#can_frame.ext,
-		 Mesg#can_frame.rtr,
 		 Bin,
 		 S);
 send_bin_message(_Mesg, _Bin, S) ->
-    oerr(?CAN_ERROR_DATA_TOO_LARGE,S).
+    output_error(?can_error_data_too_large,S).
 
-send_message(ID, L, _Ext=false, _Rtr=false, Data, S) ->
-    send_frame(S, [$t,to_hex(ID,3), L+$0, to_hex_min(Data,L)]);
-send_message(ID, L, _Ext=true, _Rtr=false, Data, S) ->
-    send_frame(S, [$T,to_hex(ID,8), L+$0, to_hex_min(Data,L)]);
-send_message(ID, L, _Ext=false, _Rtr=true, Data, S) ->
-    send_frame(S, [$r,to_hex(ID,3), L+$0, to_hex_max(Data,8)]);
-send_message(ID, L, _Ext=true, _Rtr=true, Data, S) ->
-    send_frame(S, [$R,to_hex(ID,8), L+$0, to_hex_max(Data,8)]);
-send_message(_ID, _L, _Ext, _Rtr, _Data, S) ->
-    oerr(?CAN_ERROR_DATA,S).
+send_message(ID, L, Data, S) ->
+    if ?is_can_id_sff(ID), ?is_not_can_id_rtr(ID) ->
+	    send_frame(S, [$t,to_hex(ID,3), L+$0, to_hex_min(Data,L)]);
+       ?is_can_id_eff(ID), ?is_not_can_id_rtr(ID) ->
+	    send_frame(S, [$T,to_hex(ID,8), L+$0, to_hex_min(Data,L)]);
+       ?is_can_id_sff(ID), ?is_can_id_rtr(ID) ->
+	    send_frame(S, [$r,to_hex(ID,3), L+$0, to_hex_max(Data,8)]);
+       ?is_can_id_eff(ID), ?is_can_id_rtr(ID) ->
+	    send_frame(S, [$R,to_hex(ID,8), L+$0, to_hex_max(Data,8)]);
+       true ->
+	    output_error(?can_error_data,S)
+    end.
 
 send_frame(S, Frame) ->
     case command(S, Frame) of
 	{ok,_Reply,S1} ->
-	    {ok, S1};
+	    {ok, count(output_frames, S1)};
 	{{error,Reason},S1} ->
-	    oerr(Reason,S1)
+	    output_error(Reason,S1)
     end.
 
 ihex(I) ->
@@ -378,23 +428,18 @@ count(Item,S) ->
     Stat = dict:update_counter(Item, 1, S#s.stat),
     S#s { stat = Stat }.
 
+output_error(Reason,S) ->
+    {{error,Reason},oerr(Reason,S)}.
+
 oerr(Reason,S) ->
     ?dbg("CANUSB:output error: ~p\n", [Reason]),
     S1 = count(output_error, S),
-    {{error,Reason},count({output_error,Reason}, S1)}.
+    count({output_error,Reason}, S1).    
 
 ierr(Reason,S) ->
     ?dbg("CANUSB:input error: ~p\n", [Reason]),
     S1 = count(input_error, S),
     count({input_error,Reason}, S1).
-
-in(S) ->
-    ?dbg("CANUSB:input frame\n", []),
-    count(input_frames, S).
-
-out(S) ->
-    ?dbg("CANUSB:output frame\n", []),
-    count(output_frames, S).
 
 %% Parse until more data is needed
 parse_all(S) ->
@@ -456,10 +501,10 @@ parse_11(<<I2,I1,I0,L,Ds/binary>>,Rtr,S) ->
 	    catch
 		error:_ ->
 		    %% bad frame ID
-		    parse(Ds,[],ierr(?CAN_ERROR_CORRUPT,S))
+		    parse(Ds,[],ierr(?can_error_corrupt,S))
 	    end;
        true ->
-	    parse(Ds,[],ierr(?CAN_ERROR_LENGTH_OUT_OF_RANGE,S))
+	    parse(Ds,[],ierr(?can_error_length_out_of_range,S))
     end;
 parse_11(_Buf,_Rtr,S) ->
     {more, S}.
@@ -472,10 +517,10 @@ parse_29(<<I7,I6,I5,I4,I3,I2,I1,I0,L,Ds/binary>>,Rtr,S) ->
 	    catch
 		error:_ ->
 		    %% bad frame ID
-		    parse(Ds,[],ierr(?CAN_ERROR_CORRUPT,S))
+		    parse(Ds,[],ierr(?can_error_corrupt,S))
 	    end;
        true ->
-	    parse(Ds,[],ierr(?CAN_ERROR_LENGTH_OUT_OF_RANGE,S))
+	    parse(Ds,[],ierr(?can_error_length_out_of_range,S))
     end;
 parse_29(_Buf,_Rtr,S) ->
     {more, S}.
@@ -485,14 +530,14 @@ parse_message(ID,Len,Ext,Rtr,Ds,S) ->
     case parse_data(Len,Rtr,Ds,[]) of
 	{ok,Data,Ts,More} ->
 	    try can:create(ID,Len,Ext,Rtr,S#s.id,Data,Ts) of
-		M ->
-		    can_router:cast(M),
-		    parse(More,[],in(S#s{buf=More}))
+		Frame ->
+		    S1 = input(Frame, S#s {buf=More}),
+		    parse(More,[],S1)
 	    catch
 		error:Reason  when is_atom(Reason) ->
 		    parse_error(Reason, S);
 		error:_Reason ->
-		    parse_error(?CAN_ERROR_CORRUPT,S)
+		    parse_error(?can_error_corrupt,S)
 	    end;
 	more ->
 	    {more, S};
@@ -503,32 +548,117 @@ parse_message(ID,Len,Ext,Rtr,Ds,S) ->
 parse_data(L,Rtr,<<Z3,Z2,Z1,Z0,$\r,Buf/binary>>, Acc) when L=:=0; Rtr=:=true->
     case catch erlang:list_to_integer([Z3,Z2,Z1,Z0],16) of
 	{'EXIT',_} -> %% ignore ?
-	    {ok, list_to_binary(lists:reverse(Acc)), error, Buf};
+	    {ok, list_to_binary(lists:reverse(Acc)), -1, Buf};
 	Stamp ->
 	    {ok, list_to_binary(lists:reverse(Acc)), Stamp, Buf}
     end;
 parse_data(L,Rtr,<<$\r,Buf/binary>>, Acc) when L=:=0; Rtr=:=true ->
-    {ok,list_to_binary(lists:reverse(Acc)), undefined, Buf};
+    {ok,list_to_binary(lists:reverse(Acc)), -1, Buf};
 parse_data(L,Rtr,<<$\n,Buf/binary>>, Acc)  when L=:=0; Rtr=:=true ->
-    {ok,list_to_binary(lists:reverse(Acc)), undefined, Buf};
+    {ok,list_to_binary(lists:reverse(Acc)), -1, Buf};
 parse_data(L,Rtr,<<H1,H0,Buf/binary>>, Acc) when L > 0 ->
     try erlang:list_to_integer([H1,H0],16) of
 	H ->
 	    parse_data(L-1,Rtr,Buf,[H|Acc])
     catch 
 	error:_ ->
-	    {{error,?CAN_ERROR_CORRUPT}, Buf}
+	    {{error,?can_error_corrupt}, Buf}
     end;
 parse_data(L,Rtr,_Buf,_Acc) when L > 0, Rtr =:= false ->
     more;
 parse_data(_L,_Rtr,Buf,_Acc) ->
-    {{error,?CAN_ERROR_CORRUPT}, Buf}.
+    {{error,?can_error_corrupt}, Buf}.
 
 
+input(Frame, S) ->
+    case can_router:fs_input(Frame, S#s.fs) of
+	true ->
+	    can_router:input(Frame),
+	    count(input_frames, S);
+	false ->
+	    S1 = count(input_frames, S),
+	    count(filter_frames, S1)
+    end.
 
-    
 
+%% Error codes return by CANUSB
+-define(CANUSB_ERROR_RECV_FIFO_FULL,   16#01).
+-define(CANUSB_ERROR_SEND_FIFO_FULL,   16#02).
+-define(CANUSB_ERROR_WARNING,          16#04).
+-define(CANUSB_ERROR_DATA_OVER_RUN,    16#08).
+-define(CANUSB_ERROR_RESERVED_10,      16#10).
+-define(CANUSB_ERROR_PASSIVE,          16#20).
+-define(CANUSB_ERROR_ARBITRATION_LOST, 16#40).
+-define(CANUSB_ERROR_BUS,              16#80).
 
-    
+error_input(Code, S) ->
+    case error_frame(Code band 16#FF, S#s.id) of
+	false -> S;
+	{true,Frame} ->
+	    case can_router:fs_input(Frame, S#s.fs) of
+		true ->
+		    can_router:input(Frame),
+		    count(error_frames, S);
+		false ->
+		    S1 = count(error_frames, S),
+		    count(filter_frames, S1)
+	    end
+    end.
 
-    
+error_frame(Code, Intf) ->
+    error_frame(Code, Intf, 0, 0, 0, 0, 0, 0).
+
+error_frame(Code, ID, Intf, D0, D1, D2, D3, D4) ->
+    if Code =:= 0, ID =:= 0 -> false;
+       Code =:= 0 ->
+	    {true,
+	     #can_frame { id=ID bor ?CAN_ERR_FLAG,
+			  len=8, 
+			  data = <<D0,D1,D2,D3,D4,0,0,0 >>,
+			  intf = Intf,
+			  ts = -1 }};
+       Code band ?CANUSB_ERROR_RECV_FIFO_FULL =/= 0 ->
+	    error_frame(Code - ?CANUSB_ERROR_RECV_FIFO_FULL, 
+			ID bor ?CAN_ERR_CRTL, Intf,
+			D0, (D1 bor ?CAN_ERR_CRTL_RX_OVERFLOW),
+			D2, D3, D4);
+       Code band ?CANUSB_ERROR_SEND_FIFO_FULL =/= 0 ->
+	    error_frame(Code - ?CANUSB_ERROR_SEND_FIFO_FULL, 
+			ID bor ?CAN_ERR_CRTL, Intf,
+			D0, (D1 bor ?CAN_ERR_CRTL_TX_OVERFLOW),
+			D2, D3, D4);
+       Code band ?CANUSB_ERROR_WARNING =/= 0 ->
+	    error_frame(Code - ?CANUSB_ERROR_WARNING, 
+			ID bor ?CAN_ERR_CRTL, Intf,
+			D0, D1 bor (?CAN_ERR_CRTL_RX_WARNING bor
+					?CAN_ERR_CRTL_TX_WARNING),
+			D2, D3, D4);
+       Code band ?CANUSB_ERROR_DATA_OVER_RUN =/= 0 ->
+	    %% FIXME: not really ?
+	    error_frame(Code - ?CANUSB_ERROR_DATA_OVER_RUN, 
+			ID bor ?CAN_ERR_CRTL, Intf,
+			D0, (D1 bor ?CAN_ERR_CRTL_RX_OVERFLOW),
+			D2, D3, D4);
+
+       Code band ?CANUSB_ERROR_RESERVED_10 =/= 0 ->
+	    error_frame(Code - ?CANUSB_ERROR_RESERVED_10, 
+			ID, Intf, D0, D1, D2, D3, D4);
+	    
+       Code band ?CANUSB_ERROR_PASSIVE =/= 0 ->
+	    error_frame(Code - ?CANUSB_ERROR_PASSIVE,
+			ID bor ?CAN_ERR_CRTL, Intf, 
+			D0, D1 bor (?CAN_ERR_CRTL_RX_PASSIVE bor
+					?CAN_ERR_CRTL_TX_PASSIVE),
+			D2, D3, D4);
+       Code band ?CANUSB_ERROR_ARBITRATION_LOST =/= 0 ->
+	    error_frame(Code - ?CANUSB_ERROR_ARBITRATION_LOST, 
+			ID bor ?CAN_ERR_LOSTARB, Intf,
+			D0, D1, D2, D3, D4);
+       Code band ?CANUSB_ERROR_BUS =/= 0 ->
+	    error_frame(Code - ?CANUSB_ERROR_BUS,
+			ID bor ?CAN_ERR_BUSERROR, Intf,
+			D0, D1, D2, D3, D4)
+    end.
+
+       
+	    

@@ -1,8 +1,8 @@
 %% -*- erlang -*-
 %%
 %% Generate by: 
-%% >  eapi:erlang("can_sock.api", "src/can_sock_drv").
-%% >  eapi:c("can_sock.api", "c_src/can_sock").
+%% >  eapi:erl("can_sock.api", "src/can_sock_drv").
+%% >  eapi:c("can_sock.api", "c_src/can_sock_drv").
 %%
 %% Socket CAN interface
 
@@ -16,19 +16,17 @@
 {erl_default_interface, control}.
 {erl_app_name, "can"}.
 {erl_srv_name, "can_sock_drv"}.
-{erl_port_name, "can_sock_prt"}.
+{erl_port_name, multiple}.
 {erl_reg_name,  "can_sock_reg"}.
 {erl_driver_name, "can_sock_drv"}.
 
 %% define in can.hrl (structure internal C name is i_can_frame)
 {struct,[intern],can_frame,
- [{uint32_t,  id},       %% CANID
-  {boolean_t, rtr},      %% RTR frame
-  {boolean_t, ext},      %% EXTended (29-bit) id
-  {int,       intf},     %% interface number
+ [{uint32_t,  id},       %% CANID + CAN_ EFF/RTR/ERR _FLAG
   {uint8_t,   len},      %% Data length
   {binary_t,  data},     %% Binary data
-  {int,       ts}        %% Time stamp 
+  {int,       intf},     %% interface number
+  {int,       ts}        %% Time stamp (-1 if not defined)
  ]}.
 
 {typedef, ok,     {const, atom_t, ok}}.
