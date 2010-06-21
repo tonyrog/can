@@ -10,7 +10,9 @@ MODULES = \
 	can_udp \
 	can_usb \
 	can_sock \
-	can_sock_drv
+	can_sock_drv \
+	can_probe \
+	can_demo
 
 EBIN = ../ebin
 ERLC = erlc

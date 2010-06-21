@@ -21,7 +21,8 @@
 	  id,          %% router id
 	  port,        %% port-id (registered as can_sock_prt)
 	  intf,        %% out-bound interface
-	  stat         %% counter dictionary
+	  stat,        %% counter dictionary
+	  fs           %% can_router:fs_new()
 	 }).	
 
 -include("../include/can.hrl").
@@ -63,19 +64,20 @@ start(IfName, Opts) ->
 
 init([IfName,Opts]) ->
     case eapi_drv:open([{driver_name, "can_sock_drv"},
-			{prt_name, can_sock_prt},
 			{app, can} | Opts]) of
 	{ok,Port} ->
-	    case get_index(IfName) of
+	    case get_index(Port, IfName) of
 		{ok,Index} ->
-		    case can_sock_drv:bind(Index) of
+		    case can_sock_drv:bind(Port,Index) of
 			ok ->
-			    case can_router:join({can_sock,Index}) of
+			    case can_router:join({can_sock,IfName,Index}) of
 				{ok,ID} ->
 				    {ok,#s { port = Port,
 					     intf = Index,
 					     id = ID,
-					     stat = dict:new() }};
+					     stat = dict:new(),
+					     fs=can_router:fs_new()
+					   }};
 				Error ->
 				    {stop, Error}
 			    end;
@@ -101,9 +103,22 @@ init([IfName,Opts]) ->
 handle_call({send,Mesg}, _From, S) when is_record(Mesg,can_frame) ->
     {Reply,S1} = send_message(Mesg,S),
     {reply, Reply, S1};
+
 handle_call(statistics,_From,S) ->
     Stat = dict:to_list(S#s.stat),
     {reply,{ok,Stat}, S};
+handle_call({add_filter,F}, _From, S) ->
+    {I,Fs} = can_router:fs_add(F,S#s.fs),
+    {reply, {ok,I}, S#s { fs=Fs }};
+handle_call({del_filter,I}, _From, S) ->
+    {Reply,Fs} = can_router:fs_del(I,S#s.fs),
+    {reply, Reply, S#s { fs=Fs }};
+handle_call({get_filter,I}, _From, S) ->
+    Reply = can_router:fs_get(I,S#s.fs),
+    {reply, Reply, S};  
+handle_call(list_filter, _From, S) ->
+    Reply = can_router:fs_list(S#s.fs),
+    {reply, Reply, S};
 handle_call(_Request, _From, S) ->
     {reply, {error,bad_call}, S}.
 
@@ -116,7 +131,29 @@ handle_call(_Request, _From, S) ->
 handle_cast({send,Mesg}, S) when is_record(Mesg,can_frame) ->
     {_, S1} = send_message(Mesg, S),
     {noreply, S1};
+
+handle_cast({statistics,From},S) ->
+    Stat = dict:to_list(S#s.stat),
+    gen_server:reply(From, {ok,Stat}),
+    {noreply, S};
+handle_cast({add_filter,From,F}, S) ->
+    {I,Fs} = can_router:fs_add(F,S#s.fs),
+    gen_server:reply(From, {ok,I}),
+    {noreply, S#s { fs=Fs }};
+handle_cast({del_filter,From,I}, S) ->
+    {Reply,Fs} = can_router:fs_del(I,S#s.fs),
+    gen_server:reply(From, Reply),
+    {noreply, S#s { fs=Fs }};
+handle_cast({get_filter,From,I}, S) ->
+    Reply = can_router:fs_get(I,S#s.fs),
+    gen_server:reply(From, Reply),
+    {noreply, S};  
+handle_cast({list_filter,From}, S) ->
+    Reply = can_router:fs_list(S#s.fs),
+    gen_server:reply(From, Reply),
+    {noreply, S};
 handle_cast(_Mesg, S) ->
+    ?dbg("can_sock: handle_cast: ~p\n", [_Mesg]),
     {noreply, S}.
 
 %%--------------------------------------------------------------------
@@ -125,11 +162,11 @@ handle_cast(_Mesg, S) ->
 %%                                       {stop, Reason, State}
 %% Description: Handling all non call/cast messages
 %%--------------------------------------------------------------------
-handle_info({Port,{data,M}}, S) when
-      is_record(M,can_frame), Port =:= S#s.port ->
+handle_info({Port,{data,Frame}}, S) when
+      is_record(Frame,can_frame), Port =:= S#s.port ->
     %% FIXME: add sub-interface ...
-    can_router:cast(M#can_frame{intf=S#s.id}),
-    {noreply, in(S)};
+    S1 = input(Frame#can_frame{intf=S#s.id}, S),
+    {noreply, S1};
 handle_info(_Info, S) ->
     io:format("can_sock: got message=~p\n", [_Info]),
     {noreply, S}.
@@ -155,36 +192,47 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal functions
 %%--------------------------------------------------------------------
 
-get_index("any") -> {ok, 0};
-get_index(IfName) -> can_sock_drv:ifindex(IfName).
+get_index(_Port, "any") -> {ok, 0};
+get_index(Port,IfName) -> can_sock_drv:ifindex(Port,IfName).
 
 
 send_message(Mesg, S) when is_record(Mesg,can_frame) ->
     if S#s.intf == 0 ->
 	    {ok,S};
        true ->
-	    Res = can_sock_drv:send(S#s.intf,Mesg),
-	    io:format("res=~p\n", [Res]),
-	    {ok,out(S)}
+	    case can_sock_drv:send(S#s.port,S#s.intf,Mesg) of
+		ok ->
+		    S1 = count(output_frames, S),
+		    {ok,S1};
+		{error,_Reason} ->
+		    output_error(?can_error_data,S)
+	    end
     end;
 send_message(_Mesg, S) ->
-    oerr(?CAN_ERROR_DATA,S).
+    output_error(?can_error_data,S).
     
-
 count(Item,S) ->
     Stat = dict:update_counter(Item, 1, S#s.stat),
     S#s { stat = Stat }.
 
+output_error(Reason,S) ->
+    {{error,Reason}, oerr(Reason,S)}.
+
 oerr(Reason,S) ->
     S1 = count(output_error, S),
-    {{error,Reason},count({output_error,Reason}, S1)}.
+    count({output_error,Reason}, S1).
 
-ierr(Reason,S) ->
-    S1 = count(input_error, S),
-    count({input_error,Reason}, S1).
+%% ierr(Reason,S) ->
+%%    S1 = count(input_error, S),
+%%    count({input_error,Reason}, S1).
 
-in(S) ->
-    count(input_frames, S).
-
-out(S) ->
-    count(output_frames, S).
+%% Push this into the driver!!!
+input(Frame, S) ->
+    case can_router:fs_input(Frame, S#s.fs) of
+	true ->
+	    can_router:input(Frame),
+	    count(input_frames, S);
+	false ->
+	    S1 = count(input_frames, S),
+	    count(filter_frames, S1)
+    end.
