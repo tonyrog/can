@@ -9,5 +9,5 @@ all:
 	(cd src; make $@)
 endif
 
-doc:
+edoc:
 	(cd src; make edoc)
