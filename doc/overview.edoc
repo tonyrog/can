@@ -1,0 +1,5 @@
+@author  Tony Rogvall <tony@rogvall.se>
+@version 1.0
+@title Erlang CAN interface.
+@doc This is a library allows you to send and receive CAN frames
+over a number of interfaces.

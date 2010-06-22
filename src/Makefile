@@ -41,6 +41,11 @@ depend:
 dialyze:
 	dialyzer --src -o dia.out -I ../include -c $(MODULES:%=%.erl) 
 
+edoc:
+	erl -noshell -pa doc -run edoc_run application "can" '".."' '[{private,true},no_packages,{sort_functions,false}]'
+##erl -noshell -run edoc_run application "'$(APP_NAME)'"
+
+
 clean:
 	rm -f $(OBJS) 
 
