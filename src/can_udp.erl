@@ -11,6 +11,7 @@
 
 %% API
 -export([start/0, start/1, start/2]).
+-export([stop/1, debug/2]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
@@ -23,20 +24,26 @@
 	  in,          %% incoming udp socket
 	  out,         %% out going udp socket
 	  id,          %% router id
-	  maddr,       %% multicase address
+	  maddr,       %% multicast address
 	  ifaddr,      %% interface address (any, {192,168,1,4} ...)
 	  mport,       %% port number used
 	  oport,       %% output port number used
 	  stat,        %% counter dictionary
-	  fs           %% can_router:fs_new()
+	  fs,          %% can_router:fs_new()
+	  debug=false  %% debug output (when debug compiled)
 	 }).
 
 -include("../include/can.hrl").
 
 -ifdef(debug).
--define(dbg(Fmt,As), io:format((Fmt), (As))).
+-define(dbg(S,Fmt,As), 
+	if (S)#s.debug =:= true ->
+		io:format((Fmt), (As));
+	   true ->
+		ok
+	end).
 -else.
--define(dbg(Fmt,As), ok).
+-define(dbg(S,Fmt,As), ok).
 -endif.
 
 %% MAC specific reuseport options
@@ -59,13 +66,19 @@
 %% Description: Starts the server
 %%--------------------------------------------------------------------
 start() ->
-    start(0, ?CAN_MULTICAST_ADDR).
+    start(0, []).
 start(BusId) ->
-    start(BusId, ?CAN_MULTICAST_ADDR).
+    start(BusId, []).
     
-start(BusId,Ip) ->
+start(BusId,IOpts) ->
     can_router:start(),
-    gen_server:start(?MODULE, [BusId, Ip], []).
+    gen_server:start(?MODULE, [BusId, [debug|IOpts]], []).
+
+stop(Pid) ->
+    gen_server:call(Pid, stop).
+
+debug(Pid, Value) when is_boolean(Value) ->
+    gen_server:call(Pid, {debug,Value}).
 
 %%====================================================================
 %% gen_server callbacks
@@ -78,7 +91,8 @@ start(BusId,Ip) ->
 %%                         {stop, Reason}
 %% Description: Initiates the server
 %%--------------------------------------------------------------------
-init([Id, MAddr]) ->
+init([Id, IOpts]) ->
+    MAddr = proplists:get_value(maddr, IOpts, ?CAN_MULTICAST_ADDR),
     LAddr = ?CAN_MULTICAST_IF,
     MPort = ?CAN_UDP_PORT+Id,
     
@@ -100,7 +114,9 @@ init([Id, MAddr]) ->
 				    stat = dict:new(),
 				    out=Out, oport=OutPort,
 				    maddr=MAddr, id=ID,
-				    fs=can_router:fs_new() }};
+				    fs=can_router:fs_new(),
+				    debug=proplists:get_bool(debug,IOpts)
+				  }};
 			Error ->
 			    {stop, Error}
 		    end;
@@ -141,6 +157,10 @@ handle_call({get_filter,I}, _From, S) ->
 handle_call(list_filter, _From, S) ->
     Reply = can_router:fs_list(S#s.fs),
     {reply, Reply, S};
+handle_call({debug,Value}, _From, S) ->
+    {reply, ok, S#s { debug=Value}};
+handle_call(stop, _From, S) ->
+    {stop, normal, ok, S};
 handle_call(_Request, _From, S) ->
     {reply, {error,bad_call}, S}.
 
@@ -175,7 +195,7 @@ handle_cast({list_filter,From}, S) ->
     gen_server:reply(From, Reply),
     {noreply, S};
 handle_cast(_Mesg, S) ->
-    ?dbg("can_udp: handle_cast: ~p\n", [_Mesg]),
+    ?dbg(S, "can_udp: handle_cast: ~p\n", [_Mesg]),
     {noreply, S}.
 
 
@@ -187,13 +207,13 @@ handle_cast(_Mesg, S) ->
 %%--------------------------------------------------------------------
 handle_info({udp,U,_Addr,Port,Data}, S) when S#s.in == U ->
     if Port =:= S#s.oport ->
-	    ?dbg("can_udp: discard ~p ~p ~p\n", [_Addr,Port,Data]),
+	    ?dbg(S,"can_udp: discard ~p ~p ~p\n", [_Addr,Port,Data]),
 	    {noreply, S};
        true->
 	    %% FIXME: add check that _Addr is a local address
 	    case Data of
-		<<CId:32/little,FLen:32/little,CData:8/binary>> ->
-		    ?dbg("CUd=~8.16.0B, FLen=~8.16.0B, CData=~p\n",
+ 		<<CId:32/little,FLen:32/little,CData:8/binary>> ->
+		    ?dbg(S, "CUd=~8.16.0B, FLen=~8.16.0B, CData=~p\n",
 			 [CId,FLen,CData]),
 		    Ts = -1,  %% add this option!
 		    case catch can:create(CId,FLen band 16#f,S#s.id,CData,Ts) of
@@ -207,11 +227,11 @@ handle_info({udp,U,_Addr,Port,Data}, S) when S#s.in == U ->
 			    S1 = input(M, S),
 			    {noreply, S1};
 			_Other ->
-			    ?dbg("CAN_UDP: Got ~p\n", [_Other]),
+			    ?dbg(S, "CAN_UDP: Got ~p\n", [_Other]),
 			    {noreply, S}
 		    end;
 		_ ->
-		    ?dbg("CAN_UDP: Got ~p\n", [Data]),
+		    ?dbg(S, "CAN_UDP: Got ~p\n", [Data]),
 		    {noreply, ierr(?can_error_corrupt,S)}
 	    end
     end;
@@ -281,7 +301,7 @@ send_message(ID, Len, Data, S) ->
 	ok ->
 	    {ok,count(output_frames, S)};
 	_Error ->
-	    ?dbg("gen_udp: failure=~p\n", [_Error]),
+	    ?dbg(S, "gen_udp: failure=~p\n", [_Error]),
 	    output_error(?can_error_transmission,S)
     end.
 

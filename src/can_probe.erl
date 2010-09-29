@@ -8,6 +8,7 @@
 -module(can_probe).
 
 -export([start/0,start/1,stop/1,init/1]).
+-export([format_frame/1]).
 
 -include_lib("can/include/can.hrl").
 

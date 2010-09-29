@@ -32,7 +32,8 @@
 	  acc = [],        %% accumulator for command replies
 	  buf = <<>>,      %% parse buffer
 	  stat,            %% counter dictionary
-	  fs               %% can_router:fs_new()
+	  fs,              %% can_router:fs_new()
+	  debug=false      %% debug output (when debug compiled)
 	 }).
 
 -define(SERVER, ?MODULE).
@@ -45,9 +46,14 @@
 	end).
 
 -ifdef(debug).
--define(dbg(Fmt,As), io:format((Fmt), (As))).
+-define(dbg(S,Fmt,As), 
+	if (S)#s.debug =:= true ->
+		io:format((Fmt), (As));
+	   true ->
+		ok
+	end).
 -else.
--define(dbg(Fmt,As), ok).
+-define(dbg(S,Fmt,As), ok).
 -endif.
 
 %%
@@ -130,22 +136,23 @@ init([Id,IOpts]) ->
 	     {stopb,1},{parity,0},{mode,raw}],
     case sl:open(DeviceName,DOpts) of
 	{ok,SL} ->
-	    ?dbg("CANUSB open: ~s@~w\n", [DeviceName,Speed]),
+	    S0 = #s { debug=proplists:get_bool(debug,IOpts)},
+	    ?dbg(S0,"CANUSB open: ~s@~w\n", [DeviceName,Speed]),
 	    case can_router:join({usb,DeviceName,Id}) of
 		{ok,ID} ->
-		    ?dbg("CANUSB joined: intf=~w\n", [ID]),
+		    ?dbg(S0,"CANUSB joined: intf=~w\n", [ID]),
 		    BitRate = proplists:get_value(bitrate,IOpts,250000),
 		    Interval = proplists:get_value(status_interval,IOpts,1000),
 		    Timer = erlang:start_timer(Interval,self(),status),
-		    S = #s { id=ID, sl=SL, 
-			     device_name=DeviceName,
-			     stat = dict:new(),
-			     baud_rate = Speed,
-			     can_speed = BitRate,
-			     status_interval = Interval,
-			     status_timer = Timer,
-			     fs=can_router:fs_new()
-			   },
+		    S = S0#s { id=ID, sl=SL, 
+			       device_name=DeviceName,
+			       stat = dict:new(),
+			       baud_rate = Speed,
+			       can_speed = BitRate,
+			       status_interval = Interval,
+			       status_timer = Timer,
+			       fs=can_router:fs_new()
+			     },
 		    case canusb_sync(S) of
 			true ->
 			    canusb_set_bitrate(S, BitRate),
@@ -232,7 +239,7 @@ handle_cast({list_filter,From}, S) ->
     gen_server:reply(From, Reply),
     {noreply, S};
 handle_cast(_Mesg, S) ->
-    ?dbg("can_usb: handle_cast: ~p\n", [_Mesg]),
+    ?dbg(S,"can_usb: handle_cast: ~p\n", [_Mesg]),
     {noreply, S}.
 
 %%--------------------------------------------------------------------
@@ -243,13 +250,13 @@ handle_cast(_Mesg, S) ->
 %%--------------------------------------------------------------------
 handle_info({SL,{data,Data}}, S) when S#s.sl == SL ->
     NewBuf = <<(S#s.buf)/binary, Data/binary>>,
-    ?dbg("can_usb:handle_info: NewBuf=~p\n", [NewBuf]),
+    ?dbg(S,"can_usb:handle_info: NewBuf=~p\n", [NewBuf]),
     {_,S1} = parse_all(S#s { buf = NewBuf}),
-    ?dbg("can_usb:handle_info: RemainBuf=~p\n", [S1#s.buf]),
+    ?dbg(S,"can_usb:handle_info: RemainBuf=~p\n", [S1#s.buf]),
     {noreply, S1};
 handle_info({timeout,Ref,status}, S) when Ref =:= S#s.status_timer ->
     case command(S, "F") of
-	{ok, Status, S1} ->
+	{ok, [$F|Status], S1} ->
 	    try erlang:list_to_integer(Status, 16) of
 		0 -> 
 		    {noreply,start_timer(S1)};
@@ -262,6 +269,9 @@ handle_info({timeout,Ref,status}, S) when Ref =:= S#s.status_timer ->
 		    io:format("can_usb: status error: ~p\n", [Reason]),
 		    {noreply,start_timer(S1)}
 	    end;
+	{ok, Status, S1} ->
+	    io:format("can_usb: status error: ~p\n", [Status]),
+	    {noreply, start_timer(S1)};	    
 	{{error,Reason}, S1} ->
 	    io:format("can_usb: status error: ~p\n", [Reason]),
 	    {noreply, start_timer(S1)}
@@ -314,13 +324,17 @@ send_bin_message(_Mesg, _Bin, S) ->
 
 send_message(ID, L, Data, S) ->
     if ?is_can_id_sff(ID), ?is_not_can_id_rtr(ID) ->
-	    send_frame(S, [$t,to_hex(ID,3), L+$0, to_hex_min(Data,L)]);
+	    ID1 = ID band ?CAN_SFF_MASK,
+	    send_frame(S, [$t,to_hex(ID1,3), L+$0, to_hex_min(Data,L)]);
        ?is_can_id_eff(ID), ?is_not_can_id_rtr(ID) ->
-	    send_frame(S, [$T,to_hex(ID,8), L+$0, to_hex_min(Data,L)]);
+	    ID1 = ID band ?CAN_EFF_MASK,
+	    send_frame(S, [$T,to_hex(ID1,8), L+$0, to_hex_min(Data,L)]);
        ?is_can_id_sff(ID), ?is_can_id_rtr(ID) ->
-	    send_frame(S, [$r,to_hex(ID,3), L+$0, to_hex_max(Data,8)]);
+	    ID1 = ID band ?CAN_SFF_MASK,
+	    send_frame(S, [$r,to_hex(ID1,3), L+$0, to_hex_max(Data,8)]);
        ?is_can_id_eff(ID), ?is_can_id_rtr(ID) ->
-	    send_frame(S, [$R,to_hex(ID,8), L+$0, to_hex_max(Data,8)]);
+	    ID1 = ID band ?CAN_EFF_MASK,
+	    send_frame(S, [$R,to_hex(ID1,8), L+$0, to_hex_max(Data,8)]);
        true ->
 	    output_error(?can_error_data,S)
     end.
@@ -397,7 +411,7 @@ command(S, Command) ->
     command(S, Command, ?COMMAND_TIMEOUT).
 
 command(S, Command, Timeout) ->
-    ?dbg("CANUSB:command: ~p\n", [Command]),
+    ?dbg(S,"CANUSB:command: ~p\n", [Command]),
     sl:send(S#s.sl, [Command, $\r]),
     wait_reply(S,Timeout).
 
@@ -409,11 +423,11 @@ wait_reply(S,Timeout) ->
 		{more,S1} ->
 		    wait_reply(S1,Timeout);
 		{ok,Reply,S1} ->
-		    ?dbg("CANUSB:wait_reply: ok\n", []),
+		    ?dbg(S,"CANUSB:wait_reply: ok\n", []),
 		    {_, S2} = parse_all(S1),
 		    {ok,Reply,S2};
 		{Error,S1} ->
-		    ?dbg("CAN_USB:wait_reply: ~p\n", [Error]),
+		    ?dbg(S,"CAN_USB:wait_reply: ~p\n", [Error]),
 		    {_, S2} = parse_all(S1),
 		    {Error,S2}
 	    end
@@ -432,12 +446,12 @@ output_error(Reason,S) ->
     {{error,Reason},oerr(Reason,S)}.
 
 oerr(Reason,S) ->
-    ?dbg("CANUSB:output error: ~p\n", [Reason]),
+    ?dbg(S,"CANUSB:output error: ~p\n", [Reason]),
     S1 = count(output_error, S),
     count({output_error,Reason}, S1).    
 
 ierr(Reason,S) ->
-    ?dbg("CANUSB:input error: ~p\n", [Reason]),
+    ?dbg(S,"CANUSB:input error: ~p\n", [Reason]),
     S1 = count(input_error, S),
     count({input_error,Reason}, S1).
 
@@ -450,7 +464,7 @@ parse_all(S) ->
 	    %% replies to command should? not be interleaved, check?
 	    parse_all(S1);
 	{_Error,S1} ->
-	    ?dbg("CAN_USB:parse_all: ~p, ~p\n", [_Error,S#s.buf]),
+	    ?dbg(S,"CAN_USB:parse_all: ~p, ~p\n", [_Error,S#s.buf]),
 	    parse_all(S1)
     end.
 
