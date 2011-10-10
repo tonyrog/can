@@ -124,7 +124,7 @@ interface(Id) ->
     case lists:keysearch(Id, #can_if.id, IFs) of
 	false ->
 	    {error, enoent};
-	{true, IF} ->
+	{value, IF} ->
 	    {ok,IF}
     end.
 
