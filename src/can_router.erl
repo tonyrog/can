@@ -20,6 +20,7 @@
 -export([add_filter/4, del_filter/2, get_filter/2, list_filter/1]).
 -export([i/0, i/1]).
 -export([statistics/0]).
+-export([debug/2, interfaces/0, interface/1, interface_pid/1]).
 
 %% Backend interface
 -export([fs_new/0, fs_add/2, fs_add/3, fs_del/2, fs_get/2, fs_list/1]).
@@ -115,6 +116,27 @@ i() ->
 	      end
       end, lists:keysort(#can_if.id, IFs)).
 
+interfaces() ->
+    gen_server:call(?SERVER, interfaces).
+
+interface(Id) ->
+    IFs = interfaces(),
+    case lists:keysearch(Id, #can_if.id, IFs) of
+	false ->
+	    {error, enoent};
+	{true, IF} ->
+	    {ok,IF}
+    end.
+
+interface_pid(Id) ->
+    {ok,IF} = interface(Id),
+    IF#can_if.pid.
+
+	    
+
+debug(Id, Bool) ->
+    call_if(Id, {debug, Bool}).
+
 i(Id) ->
     case gen_server:call(?SERVER, {interface,Id}) of
 	{ok,If} ->
@@ -122,12 +144,10 @@ i(Id) ->
 		{ok,Stat} ->
 		    print_stat(If, Stat);
 		Error ->
-		    io:format("~2w: ~p\n  error = ~p\n",
-			      [If#can_if.id,If#can_if.param,Error])
-
+		    Error
 	    end;
-	{error,enoent} ->
-	    io:format("~2w: no such interface\n", [Id])
+	Error ->
+	    Error
     end.
 
 print_stat(If, Stat) ->
@@ -136,7 +156,17 @@ print_stat(If, Stat) ->
       fun({Counter,Value}) ->
 	      io:format("  ~p: ~w\n", [Counter, Value])
       end, lists:sort(Stat)).
-	
+
+call_if(Id, Request) ->	
+    case gen_server:call(?SERVER, {interface,Id}) of
+	{ok,If} ->
+	    gen_server:call(If#can_if.pid, Request);
+	{error,enoent} ->
+	    io:format("~2w: no such interface\n", [Id]),
+	    {error,enoent};
+	Error ->
+	    Error
+    end.
 
 %% attach - simulated can bus or application
 attach() ->

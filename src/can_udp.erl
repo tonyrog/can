@@ -72,7 +72,7 @@ start(BusId) ->
     
 start(BusId,IOpts) ->
     can_router:start(),
-    gen_server:start(?MODULE, [BusId, [debug|IOpts]], []).
+    gen_server:start(?MODULE, [BusId, IOpts], []).
 
 stop(Pid) ->
     gen_server:call(Pid, stop).
