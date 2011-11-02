@@ -12,7 +12,8 @@ MODULES = \
 	can_sock \
 	can_sock_drv \
 	can_probe \
-	can_demo
+	can_demo \
+	can_epx
 
 EBIN = ../ebin
 ERLC = erlc
