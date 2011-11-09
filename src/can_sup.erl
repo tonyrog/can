@@ -8,7 +8,7 @@
 -behaviour(supervisor).
 
 %% External exports
--export([start_link/0, start_link/1]).
+-export([start_link/0, start_link/1, stop/1]).
 
 %% supervisor callbacks
 -export([init/1]).
@@ -16,11 +16,19 @@
 %%%----------------------------------------------------------------------
 %%% API
 %%%----------------------------------------------------------------------
-start_link() ->
-    start_link([]).
 start_link(Args) ->
-    supervisor:start_link({local, ?MODULE}, ?MODULE, Args).
+    case supervisor:start_link({local, ?MODULE}, ?MODULE, Args) of
+	{ok, Pid} ->
+	    {ok, Pid, {normal, Args}};
+	Error -> 
+	    Error
+    end.
 
+start_link() ->
+    supervisor:start_link({local,?MODULE}, ?MODULE, []).
+
+stop(_StartArgs) ->
+    ok.
 
 %%%----------------------------------------------------------------------
 %%% Callback functions from supervisor
