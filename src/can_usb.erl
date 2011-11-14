@@ -42,7 +42,7 @@
 
 -define(BITADD(Code, Bit, Name),
 	if (Code) band (Bit) =:= 0 -> [];
-	   true  -> [(Name)]
+ 	   true  -> [(Name)]
 	end).
 
 -ifdef(debug).
@@ -632,22 +632,26 @@ error_frame(Code, ID, Intf, D0, D1, D2, D3, D4) ->
 			  intf = Intf,
 			  ts = -1 }};
        Code band ?CANUSB_ERROR_RECV_FIFO_FULL =/= 0 ->
+	    io:format("error, recv_fifo_full\n"),
 	    error_frame(Code - ?CANUSB_ERROR_RECV_FIFO_FULL, 
 			ID bor ?CAN_ERR_CRTL, Intf,
 			D0, (D1 bor ?CAN_ERR_CRTL_RX_OVERFLOW),
 			D2, D3, D4);
        Code band ?CANUSB_ERROR_SEND_FIFO_FULL =/= 0 ->
+	    io:format("error, send_fifo_full\n"),
 	    error_frame(Code - ?CANUSB_ERROR_SEND_FIFO_FULL, 
 			ID bor ?CAN_ERR_CRTL, Intf,
 			D0, (D1 bor ?CAN_ERR_CRTL_TX_OVERFLOW),
 			D2, D3, D4);
        Code band ?CANUSB_ERROR_WARNING =/= 0 ->
+	    io:format("error, warning\n"),
 	    error_frame(Code - ?CANUSB_ERROR_WARNING, 
 			ID bor ?CAN_ERR_CRTL, Intf,
 			D0, D1 bor (?CAN_ERR_CRTL_RX_WARNING bor
 					?CAN_ERR_CRTL_TX_WARNING),
 			D2, D3, D4);
        Code band ?CANUSB_ERROR_DATA_OVER_RUN =/= 0 ->
+	    io:format("error, data_over_run\n"),
 	    %% FIXME: not really ?
 	    error_frame(Code - ?CANUSB_ERROR_DATA_OVER_RUN, 
 			ID bor ?CAN_ERR_CRTL, Intf,
@@ -659,16 +663,19 @@ error_frame(Code, ID, Intf, D0, D1, D2, D3, D4) ->
 			ID, Intf, D0, D1, D2, D3, D4);
 	    
        Code band ?CANUSB_ERROR_PASSIVE =/= 0 ->
+	    io:format("error, passive\n"),
 	    error_frame(Code - ?CANUSB_ERROR_PASSIVE,
 			ID bor ?CAN_ERR_CRTL, Intf, 
 			D0, D1 bor (?CAN_ERR_CRTL_RX_PASSIVE bor
 					?CAN_ERR_CRTL_TX_PASSIVE),
 			D2, D3, D4);
        Code band ?CANUSB_ERROR_ARBITRATION_LOST =/= 0 ->
+	    io:format("error, arbitration_lost\n"),
 	    error_frame(Code - ?CANUSB_ERROR_ARBITRATION_LOST, 
 			ID bor ?CAN_ERR_LOSTARB, Intf,
 			D0, D1, D2, D3, D4);
        Code band ?CANUSB_ERROR_BUS =/= 0 ->
+	    io:format("error, bus\n"),
 	    error_frame(Code - ?CANUSB_ERROR_BUS,
 			ID bor ?CAN_ERR_BUSERROR, Intf,
 			D0, D1, D2, D3, D4)
