@@ -1,7 +1,7 @@
 EAPI_DIR = ../../eapi
 include $(EAPI_DIR)/make/eapi_drv.mk
 
-CFLAGS += -I $(EAPI_DIR)/include 
+CFLAGS += -I $(EAPI_DIR)/include -I .
 LDFLAGS += 
 
 # No prefix for the .so file (just causes problem right now)
