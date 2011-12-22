@@ -93,11 +93,12 @@ debug(Pid, Value) when is_boolean(Value) ->
 %%--------------------------------------------------------------------
 init([Id, IOpts]) ->
     MAddr = proplists:get_value(maddr, IOpts, ?CAN_MULTICAST_ADDR),
+    Mttl  = proplists:get_value(ttl, IOpts, 1),
     LAddr = ?CAN_MULTICAST_IF,
     MPort = ?CAN_UDP_PORT+Id,
     
     SendOpts = [{active,false},{multicast_if,LAddr},
-		{multicast_ttl,1},{multicast_loop,true}],
+		{multicast_ttl,Mttl},{multicast_loop,true}],
 
     RecvOpts = [{reuseaddr,true},{mode,binary},{active,false},
 		{ifaddr,LAddr}] ++reuse_port(),
