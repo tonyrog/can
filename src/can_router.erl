@@ -105,6 +105,7 @@ statistics() ->
 
 i() ->
     IFs = gen_server:call(?SERVER, interfaces),
+    io:format("Interfaces\n",[]),
     lists:foreach(
       fun(If) ->
 	      case gen_server:call(If#can_if.pid, statistics) of
@@ -114,7 +115,19 @@ i() ->
 		      io:format("~2w: ~p\n  error = ~p\n",
 				[If#can_if.id,If#can_if.param,Error])
 	      end
-      end, lists:keysort(#can_if.id, IFs)).
+      end, lists:keysort(#can_if.id, IFs)),
+    Apps = gen_server:call(?SERVER, applications),
+    io:format("Applications\n",[]),
+    lists:foreach(
+      fun(App) ->
+	      Name = case process_info(App#can_app.pid, registered_name) of
+			 {registered_name, Nm} -> atom_to_list(Nm);
+			 _ -> ""
+		     end,
+	      io:format("~w: ~s interface=~p\n",
+			[App#can_app.pid,Name,App#can_app.interface])
+      end, Apps).
+    
 
 interfaces() ->
     gen_server:call(?SERVER, interfaces).
@@ -293,7 +306,8 @@ handle_call({interface,Param}, _From, S) ->
     end;
 handle_call(interfaces, _From, S) ->
     {reply, S#s.ifs, S};
-
+handle_call(applications, _From, S) ->
+    {reply, S#s.apps, S};
 handle_call({add_filter,Intf,Invert,ID,Mask}, From, S) when 
       is_integer(Intf), is_boolean(Invert), is_integer(ID), is_integer(Mask) ->
     case lists:keysearch(Intf, #can_if.id, S#s.ifs) of
