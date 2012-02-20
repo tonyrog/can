@@ -109,7 +109,7 @@ init([Id, IOpts]) ->
 	    {ok,OutPort} = inet:port(Out),
 	    case catch gen_udp:open(MPort,RecvOpts++MultiOpts) of
 		{ok,In} ->
-		    case can_router:join({udp,MAddr,MPort}) of
+		    case can_router:join({?MODULE,MAddr,MPort}) of
 			{ok,ID} ->
 			    {ok,#s{ in=In, mport=MPort,
 				    stat = dict:new(),

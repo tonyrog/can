@@ -11,12 +11,13 @@
 
 -include("../include/can.hrl").
 
+%% API
+-export([start/0, start/1, start/2]).
+-export([stop/1, debug/2]).
+
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
 	 terminate/2, code_change/3]).
-
-%% API
--export([start/0, start/1]).
 
 -compile(export_all).
 
@@ -74,13 +75,17 @@ start(BusId, Opts) ->
     can_router:start(),
     gen_server:start(?MODULE, [BusId,Opts], []).
 
+stop(Pid) ->
+    gen_server:call(Pid, stop).
+
+debug(Pid, Value) when is_boolean(Value) ->
+    gen_server:call(Pid, {debug,Value}).
+
 set_bitrate(Pid, BitRate) ->
     gen_server:call(Pid, {set_bitrate, BitRate}).
 
 get_bitrate(Pid) ->
     gen_server:call(Pid, get_bitrate).
-
-
 
 get_version(Pid) ->
     case gen_server:call(Pid, {command, "V"}) of
@@ -138,7 +143,7 @@ init([Id,IOpts]) ->
 	{ok,SL} ->
 	    S0 = #s { debug=proplists:get_bool(debug,IOpts)},
 	    ?dbg(S0,"CANUSB open: ~s@~w\n", [DeviceName,Speed]),
-	    case can_router:join({usb,DeviceName,Id}) of
+	    case can_router:join({?MODULE,DeviceName,Id}) of
 		{ok,ID} ->
 		    ?dbg(S0,"CANUSB joined: intf=~w\n", [ID]),
 		    BitRate = proplists:get_value(bitrate,IOpts,250000),
@@ -205,6 +210,10 @@ handle_call({add_filter,I,F}, _From, S) ->
 handle_call({del_filter,I}, _From, S) ->
     {Reply,Fs} = can_router:fs_del(I,S#s.fs),
     {reply, Reply, S#s { fs=Fs }};
+handle_call({debug,Value}, _From, S) ->
+    {reply, ok, S#s { debug=Value}};
+handle_call(stop, _From, S) ->
+    {stop, normal, ok, S};
 handle_call(_Request, _From, S) ->
     {reply, {error,bad_call}, S}.
 

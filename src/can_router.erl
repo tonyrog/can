@@ -10,7 +10,7 @@
 -behaviour(gen_server).
 
 %% API
--export([start/0, start/1]).
+-export([start/0, start/1, stop/0]).
 -export([start_link/0, start_link/1]).
 -export([join/1]).
 -export([attach/0, detach/0]).
@@ -18,9 +18,11 @@
 -export([sync_send/1, sync_send_from/2]).
 -export([input/1, input_from/2]).
 -export([add_filter/4, del_filter/2, get_filter/2, list_filter/1]).
+-export([stop/1, restart/1]).
 -export([i/0, i/1]).
 -export([statistics/0]).
 -export([debug/2, interfaces/0, interface/1, interface_pid/1]).
+
 
 %% Backend interface
 -export([fs_new/0, fs_add/2, fs_add/3, fs_del/2, fs_get/2, fs_list/1]).
@@ -54,7 +56,7 @@
 	  pid,      %% can interface pid
 	  id,       %% interface id
 	  mon,      %% can app monitor
-	  param     %% match param
+	  param     %% match param normally {Mod,Name,Index} 
 	}).
 
 -record(can_app,
@@ -145,10 +147,29 @@ interface_pid(Id) ->
     {ok,IF} = interface(Id),
     IF#can_if.pid.
 
-	    
-
 debug(Id, Bool) ->
     call_if(Id, {debug, Bool}).
+
+stop(Id) ->
+    call_if(Id, stop).    
+
+restart(Id) ->
+    case gen_server:call(?SERVER, {interface,Id}) of
+	{ok,If} ->
+	    case If#can_if.param of
+		{can_usb,_,N} ->
+		    ok = gen_server:call(If#can_if.pid, stop),
+		    can_usb:start(N);
+		{can_udp,_,N} ->
+		    ok = gen_server:call(If#can_if.pid, stop),
+		    can_udp:start(N-51712);
+		{can_sock,IfName,_Index} ->
+		    ok = gen_server:call(If#can_if.pid, stop),
+		    can_sock:start(IfName)
+	    end;
+	Error ->
+	    Error
+    end.
 
 i(Id) ->
     case gen_server:call(?SERVER, {interface,Id}) of
@@ -180,6 +201,9 @@ call_if(Id, Request) ->
 	Error ->
 	    Error
     end.
+
+stop() ->
+    gen_server:call(?SERVER, stop).
 
 %% attach - simulated can bus or application
 attach() ->
@@ -350,6 +374,9 @@ handle_call({list_filter,Intf}, From, S) ->
 	    gen_server:cast(If#can_if.pid, {list_filter,From}),
 	    {noreply,S}
     end;
+
+handle_call(stop, _From, S) ->
+    {stop, normal, ok, S};
 
 handle_call(_Request, _From, S) ->
     {reply, {error, bad_call}, S}.

@@ -11,6 +11,7 @@
 
 %% API
 -export([start/0, start/1, start/2]).
+-export([stop/1, debug/2]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
@@ -22,15 +23,21 @@
 	  port,        %% port-id (registered as can_sock_prt)
 	  intf,        %% out-bound interface
 	  stat,        %% counter dictionary
-	  fs           %% can_router:fs_new()
+	  fs,          %% can_router:fs_new()
+	  debug=false  %% debug output (when debug compiled)
 	 }).	
 
 -include("../include/can.hrl").
 
 -ifdef(debug).
--define(dbg(Fmt,As), io:format((Fmt), (As))).
+-define(dbg(S,Fmt,As), 
+	if (S)#s.debug =:= true ->
+		io:format((Fmt), (As));
+	   true ->
+		ok
+	end).
 -else.
--define(dbg(Fmt,As), ok).
+-define(dbg(S,Fmt,As), ok).
 -endif.
 
 %%====================================================================
@@ -49,7 +56,13 @@ start(IfName) ->
 start(IfName, Opts) ->
     can_router:start(),
     gen_server:start(?MODULE, [IfName,Opts], []).
-    
+
+stop(Pid) ->
+    gen_server:call(Pid, stop).
+
+debug(Pid, Value) when is_boolean(Value) ->
+    gen_server:call(Pid, {debug,Value}).
+
 %%====================================================================
 %% gen_server callbacks
 %%====================================================================
@@ -70,7 +83,7 @@ init([IfName,Opts]) ->
 		{ok,Index} ->
 		    case can_sock_drv:bind(Port,Index) of
 			ok ->
-			    case can_router:join({can_sock,IfName,Index}) of
+			    case can_router:join({?MODULE,IfName,Index}) of
 				{ok,ID} ->
 				    {ok,#s { port = Port,
 					     intf = Index,
@@ -119,6 +132,10 @@ handle_call({get_filter,I}, _From, S) ->
 handle_call(list_filter, _From, S) ->
     Reply = can_router:fs_list(S#s.fs),
     {reply, Reply, S};
+handle_call({debug,Value}, _From, S) ->
+    {reply, ok, S#s { debug=Value}};
+handle_call(stop, _From, S) ->
+    {stop, normal, ok, S};
 handle_call(_Request, _From, S) ->
     {reply, {error,bad_call}, S}.
 
@@ -153,7 +170,7 @@ handle_cast({list_filter,From}, S) ->
     gen_server:reply(From, Reply),
     {noreply, S};
 handle_cast(_Mesg, S) ->
-    ?dbg("can_sock: handle_cast: ~p\n", [_Mesg]),
+    ?dbg(S,"can_sock: handle_cast: ~p\n", [_Mesg]),
     {noreply, S}.
 
 %%--------------------------------------------------------------------
