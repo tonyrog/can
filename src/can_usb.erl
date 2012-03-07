@@ -26,10 +26,12 @@
 	  id,              %% interface id
 	  sl,              %% serial line port id
 	  device_name,     %% device name
+	  offset,          %% Usb port offset
 	  baud_rate,       %% baud rate to canusb
 	  can_speed,       %% CAN bus speed
 	  status_interval, %% Check status interval
 	  status_timer,    %% Check status timer
+	  retry_timeout,   %% Timeout for open retry
 	  acc = [],        %% accumulator for command replies
 	  buf = <<>>,      %% parse buffer
 	  stat,            %% counter dictionary
@@ -137,42 +139,61 @@ init([Id,IOpts]) ->
 		false -> 115200;
 		Spd -> list_to_integer(Spd)
 	    end,
+    RetryTimeout = proplists:get_value(timeout, IOpts, 1),
+    BitRate = proplists:get_value(bitrate,IOpts,250000),
+    Interval = proplists:get_value(status_interval,IOpts,1000),
+    S = #s { device_name=DeviceName,
+	     offset = Id,
+	     stat = dict:new(),
+	     baud_rate = Speed,
+	     can_speed = BitRate,
+	     status_interval = Interval,
+	     retry_timeout = RetryTimeout,
+	     fs=can_router:fs_new(),
+	     debug=proplists:get_bool(debug,IOpts)
+	   },
+
+    case open(S) of
+	{ok, S1} -> {ok, S1};
+	Error -> {stop, Error}
+    end.
+
+
+open(S0=#s {device_name = DeviceName, baud_rate = Speed, offset = Offset, 
+	    status_interval = Interval, can_speed = BitRate, 
+	    retry_timeout = RetryTimeout}) ->
+
     DOpts = [binary,{baud,Speed},{buftm,1},{bufsz,128},
-	     {stopb,1},{parity,0},{mode,raw}],
+	     {stopb,1},{parity,0},{mode,raw}],    
     case sl:open(DeviceName,DOpts) of
 	{ok,SL} ->
-	    S0 = #s { debug=proplists:get_bool(debug,IOpts)},
 	    ?dbg(S0,"CANUSB open: ~s@~w\n", [DeviceName,Speed]),
-	    case can_router:join({?MODULE,DeviceName,Id}) of
+	    case can_router:join({?MODULE,DeviceName,Offset}) of
 		{ok,ID} ->
 		    ?dbg(S0,"CANUSB joined: intf=~w\n", [ID]),
-		    BitRate = proplists:get_value(bitrate,IOpts,250000),
-		    Interval = proplists:get_value(status_interval,IOpts,1000),
 		    Timer = erlang:start_timer(Interval,self(),status),
-		    S = S0#s { id=ID, sl=SL, 
-			       device_name=DeviceName,
-			       stat = dict:new(),
-			       baud_rate = Speed,
-			       can_speed = BitRate,
-			       status_interval = Interval,
-			       status_timer = Timer,
-			       fs=can_router:fs_new()
-			     },
+		    S = S0#s { id=ID, sl=SL, status_timer=Timer },
 		    case canusb_sync(S) of
 			true ->
 			    canusb_set_bitrate(S, BitRate),
 			    command_open(S),
 			    {ok, S};
 			Error ->
-			    {stop, Error}
+			    {error, Error}
 		    end;
 		false ->
-		    {stop, sync_error}
+		    {error, sync_error}
 	    end;
+	{error, E} when E == eaccess;
+			E == enoent ->
+	    ?dbg(S0,"open: Port could not be opened, will try again "
+		 "in ~p secs.\n", [RetryTimeout]),
+	    timer:send_after(RetryTimeout * 1000, retry),
+	    {ok, S0};
 	Error ->
-	    {stop, Error}
+	    Error
     end.
-
+    
 %%--------------------------------------------------------------------
 %% Function: %% handle_call(Request, From, State) -> {reply, Reply, State} |
 %%                                      {reply, Reply, State, Timeout} |
@@ -284,6 +305,11 @@ handle_info({timeout,Ref,status}, S) when Ref =:= S#s.status_timer ->
 	{{error,Reason}, S1} ->
 	    io:format("can_usb: status error: ~p\n", [Reason]),
 	    {noreply, start_timer(S1)}
+    end;
+handle_info(retry, S) ->
+    case open(S) of
+	{ok, S1} -> {noreply, S1};
+	Error -> {stop, Error, S}
     end;
 
 handle_info(_Info, S) ->
