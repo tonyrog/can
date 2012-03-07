@@ -4,6 +4,9 @@ ifeq ($(OSNAME), Linux)
 all:
 	rebar compile
 
+debug: 
+	rebar compile -Ddebug
+
 it:
 	(cd c_src; make $@)
 	(cd src; make $@)

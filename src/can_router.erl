@@ -261,6 +261,7 @@ input_from(Pid,Frame) when is_pid(Pid), is_record(Frame, can_frame) ->
 %% Description: Initiates the server
 %%--------------------------------------------------------------------
 init(_Args) ->
+    process_flag(trap_exit, true),
     {ok, #s{}}.
 
 %%--------------------------------------------------------------------
@@ -310,6 +311,7 @@ handle_call({join,Pid,Param}, _From, S) ->
 	    If = #can_if { pid=Pid, id=ID, mon=Mon, param=Param },
 	    Ifs1 = [If | S#s.ifs ],
 	    S1 = S#s { if_count = ID+1, ifs = Ifs1 },
+	    link(Pid),
 	    {reply, {ok,ID}, S1};
 	{value,_} ->
 	    {reply, {error,ealready}, S}
@@ -423,6 +425,18 @@ handle_info({'DOWN',_Ref,process,Pid,_Reason},S) ->
 	{value,_App,Apps} ->
 	    %% FIXME: Restart?
 	    {noreply,S#s { apps = Apps }}
+    end;
+handle_info({'EXIT', Pid, Reason}, S) ->
+    case lists:keytake(Pid, #can_if.pid, S#s.ifs) of
+	{value,_If,Ifs} ->
+	    %% One of our interfaces died, log and ignore
+	    ?dbg("can_router: interface ~p died, reason ~p\n", [_If, Reason]),
+	    {noreply,S#s { ifs = Ifs }};
+	false ->
+	    %% Someone else died, log and terminate
+	    ?dbg("can_router: linked process ~p died, reason ~p, terminating\n", 
+		 [Pid, Reason]),
+	    {stop, Reason, S}
     end;
 handle_info(_Info, S) ->
     {noreply, S}.
