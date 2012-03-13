@@ -11,6 +11,7 @@
 
 %% API
 -export([start/0, start/1, start/2]).
+-export([start_link/0, start_link/1, start_link/2]).
 -export([stop/1, debug/2]).
 
 %% gen_server callbacks
@@ -73,6 +74,15 @@ start(BusId) ->
 start(BusId,IOpts) ->
     can_router:start(),
     gen_server:start(?MODULE, [BusId, IOpts], []).
+
+start_link() ->
+    start_link(0, []).
+start_link(BusId) ->
+    start_link(BusId, []).
+    
+start_link(BusId,IOpts) ->
+    can_router:start(),
+    gen_server:start_link(?MODULE, [BusId, IOpts], []).
 
 stop(Pid) ->
     gen_server:call(Pid, stop).
