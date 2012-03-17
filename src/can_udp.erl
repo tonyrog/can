@@ -10,7 +10,7 @@
 -behaviour(gen_server).
 
 %% API
--export([start/0, start/1, start/2]).
+-export([start/0, start/1, start/2, start/3]).
 -export([start_link/0, start_link/1, start_link/2]).
 -export([stop/1, debug/2]).
 
@@ -68,24 +68,35 @@
 %%--------------------------------------------------------------------
 start() ->
     start(0, []).
-start(BusId) ->
-    start(BusId, []).
+start(BusId) when is_integer(BusId)->
+    start(BusId, []);
+start(Name) ->
+    start(Name, 0, []).
     
-start(BusId,IOpts) ->
+start(Name, BusId) when is_integer(BusId)->
+    start(Name, BusId, []);
+start(BusId, IOpts) when is_integer(BusId) ->
     can_router:start(),
     gen_server:start(?MODULE, [BusId, IOpts], []).
 
+start(Name, BusId, IOpts) ->
+    can_router:start(),
+    gen_server:start({local, Name}, ?MODULE, [BusId, IOpts], []).
+
 start_link() ->
     start_link(0, []).
-start_link(BusId) ->
+start_link(BusId) when is_integer(BusId) ->
     start_link(BusId, []).
     
 start_link(BusId,IOpts) ->
     can_router:start(),
     gen_server:start_link(?MODULE, [BusId, IOpts], []).
 
-stop(Pid) ->
-    gen_server:call(Pid, stop).
+stop(Pid) when is_pid(Pid) ->
+    gen_server:call(Pid, stop);
+stop(Name) ->
+    gen_server:call(Name, stop).
+
 
 debug(Pid, Value) when is_boolean(Value) ->
     gen_server:call(Pid, {debug,Value}).
