@@ -1,7 +1,7 @@
 %%% File    : can.erl
-%%% Author  : Tony Rogvall <tony@PBook.lan>
+%%% Author  : Tony Rogvall <tony@rogvall.se
 %%% Description : can message creator
-%%% Created :  7 Jan 2008 by Tony Rogvall <tony@PBook.lan>
+%%% Created :  7 Jan 2008 by Tony Rogvall 
 
 -module(can).
 
