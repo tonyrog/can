@@ -296,14 +296,14 @@ handle_info({timeout,Ref,status}, S) when Ref =:= S#s.status_timer ->
 		    {noreply,S3}
 	    catch
 		error:Reason ->
-		    io:format("can_usb: status error: ~p\n", [Reason]),
+		    error_logger:error_msg("can_usb: status error: ~p\n", [Reason]),
 		    {noreply,start_timer(S1)}
 	    end;
 	{ok, Status, S1} ->
-	    io:format("can_usb: status error: ~p\n", [Status]),
+	    error_logger:error_msg("can_usb: status error: ~p\n", [Status]),
 	    {noreply, start_timer(S1)};	    
 	{{error,Reason}, S1} ->
-	    io:format("can_usb: status error: ~p\n", [Reason]),
+	    error_logger:error_msg("can_usb: status error: ~p\n", [Reason]),
 	    {noreply, start_timer(S1)}
     end;
 handle_info(retry, S) ->
@@ -667,26 +667,26 @@ error_frame(Code, ID, Intf, D0, D1, D2, D3, D4) ->
 			  intf = Intf,
 			  ts = -1 }};
        Code band ?CANUSB_ERROR_RECV_FIFO_FULL =/= 0 ->
-	    io:format("error, recv_fifo_full\n"),
+	    error_logger:error_msg("error, recv_fifo_full\n"),
 	    error_frame(Code - ?CANUSB_ERROR_RECV_FIFO_FULL, 
 			ID bor ?CAN_ERR_CRTL, Intf,
 			D0, (D1 bor ?CAN_ERR_CRTL_RX_OVERFLOW),
 			D2, D3, D4);
        Code band ?CANUSB_ERROR_SEND_FIFO_FULL =/= 0 ->
-	    io:format("error, send_fifo_full\n"),
+	    error_logger:error_msg("error, send_fifo_full\n"),
 	    error_frame(Code - ?CANUSB_ERROR_SEND_FIFO_FULL, 
 			ID bor ?CAN_ERR_CRTL, Intf,
 			D0, (D1 bor ?CAN_ERR_CRTL_TX_OVERFLOW),
 			D2, D3, D4);
        Code band ?CANUSB_ERROR_WARNING =/= 0 ->
-	    io:format("error, warning\n"),
+	    error_logger:error_msg("error, warning\n"),
 	    error_frame(Code - ?CANUSB_ERROR_WARNING, 
 			ID bor ?CAN_ERR_CRTL, Intf,
 			D0, D1 bor (?CAN_ERR_CRTL_RX_WARNING bor
 					?CAN_ERR_CRTL_TX_WARNING),
 			D2, D3, D4);
        Code band ?CANUSB_ERROR_DATA_OVER_RUN =/= 0 ->
-	    io:format("error, data_over_run\n"),
+	    error_logger:error_msg("error, data_over_run\n"),
 	    %% FIXME: not really ?
 	    error_frame(Code - ?CANUSB_ERROR_DATA_OVER_RUN, 
 			ID bor ?CAN_ERR_CRTL, Intf,
@@ -698,19 +698,19 @@ error_frame(Code, ID, Intf, D0, D1, D2, D3, D4) ->
 			ID, Intf, D0, D1, D2, D3, D4);
 	    
        Code band ?CANUSB_ERROR_PASSIVE =/= 0 ->
-	    io:format("error, passive\n"),
+	    error_logger:error_msg("error, passive\n"),
 	    error_frame(Code - ?CANUSB_ERROR_PASSIVE,
 			ID bor ?CAN_ERR_CRTL, Intf, 
 			D0, D1 bor (?CAN_ERR_CRTL_RX_PASSIVE bor
 					?CAN_ERR_CRTL_TX_PASSIVE),
 			D2, D3, D4);
        Code band ?CANUSB_ERROR_ARBITRATION_LOST =/= 0 ->
-	    io:format("error, arbitration_lost\n"),
+	    error_logger:error_msg("error, arbitration_lost\n"),
 	    error_frame(Code - ?CANUSB_ERROR_ARBITRATION_LOST, 
 			ID bor ?CAN_ERR_LOSTARB, Intf,
 			D0, D1, D2, D3, D4);
        Code band ?CANUSB_ERROR_BUS =/= 0 ->
-	    io:format("error, bus\n"),
+	    error_logger:error_msg("error, bus\n"),
 	    error_frame(Code - ?CANUSB_ERROR_BUS,
 			ID bor ?CAN_ERR_BUSERROR, Intf,
 			D0, D1, D2, D3, D4)

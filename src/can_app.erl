@@ -34,12 +34,12 @@
 %% @end
 %%--------------------------------------------------------------------
 start(_StartType, _StartArgs) ->
+    error_logger:info_msg("~p: start: args ignored\n", [?MODULE]),
     Args = 
 	case application:get_env(arguments) of
 	    undefined -> [];
 	    {ok,As} -> As
 	end,
-    io:format("can_app: Args=~p\n", [Args]),
     can_sup:start_link(Args).
 
 %%--------------------------------------------------------------------

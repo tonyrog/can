@@ -261,6 +261,7 @@ input_from(Pid,Frame) when is_pid(Pid), is_record(Frame, can_frame) ->
 %% Description: Initiates the server
 %%--------------------------------------------------------------------
 init(_Args) ->
+    error_logger:info_msg("~p: init: args ignored pid = ~p\n", [?MODULE, self()]),
     process_flag(trap_exit, true),
     {ok, #s{}}.
 

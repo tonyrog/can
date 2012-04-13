@@ -17,6 +17,7 @@
 %%% API
 %%%----------------------------------------------------------------------
 start_link(Args) ->
+    error_logger:info_msg("~p: start_link: args = ~p\n", [?MODULE, Args]),
     case supervisor:start_link({local, ?MODULE}, ?MODULE, Args) of
 	{ok, Pid} ->
 	    {ok, Pid, {normal, Args}};
@@ -37,6 +38,7 @@ stop(_StartArgs) ->
 %%----------------------------------------------------------------------
 %%----------------------------------------------------------------------
 init(Args) ->
+    error_logger:info_msg("~p: init: args = ~p,\n pid = ~p\n", [?MODULE, Args, self()]),
     CanRouter = {can_router, {can_router, start_link, [Args]},
 		 permanent, 5000, worker, [can_router]},
     {ok,{{one_for_all,0,300}, [CanRouter]}}.
