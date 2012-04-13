@@ -86,6 +86,7 @@
 start_link() ->  start_link([]).
 
 start_link(Args) ->
+    error_logger:info_msg("~p: start_link: args = ~p\n", [?MODULE, Args]),
     gen_server:start_link({local, ?SERVER}, ?MODULE, Args, []).
 
 start() -> start([]).
