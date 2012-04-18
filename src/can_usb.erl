@@ -173,14 +173,10 @@ open(S0=#s {device_name = DeviceName, baud_rate = Speed, offset = Offset,
 		    ?dbg(S0,"CANUSB joined: intf=~w\n", [ID]),
 		    Timer = erlang:start_timer(Interval,self(),status),
 		    S = S0#s { id=ID, sl=SL, status_timer=Timer },
-		    case canusb_sync(S) of
-			true ->
-			    canusb_set_bitrate(S, BitRate),
-			    command_open(S),
-			    {ok, S};
-			Error ->
-			    {error, Error}
-		    end;
+		    canusb_sync(S),
+		    canusb_set_bitrate(S, BitRate),
+		    command_open(S),
+		    {ok, S};
 		false ->
 		    {error, sync_error}
 	    end;
@@ -211,7 +207,7 @@ handle_call(statistics,_From,S) ->
     {reply,{ok,Stat}, S};
 handle_call({set_bitrate,Rate}, _From, S) ->
     case canusb_set_bitrate(S, Rate) of
-	{ok, S1} ->
+	{ok, _Reply, S1} ->
 	    {reply, ok, S1#s { can_speed=Rate}};
 	{Error,S1} ->
 	    {reply, Error, S1}
