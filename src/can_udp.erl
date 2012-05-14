@@ -95,7 +95,10 @@ start_link(BusId,IOpts) ->
 stop(Pid) when is_pid(Pid) ->
     gen_server:call(Pid, stop);
 stop(Name) ->
-    gen_server:call(Name, stop).
+    case whereis(Name) of
+	Pid when is_pid(Pid) ->  gen_server:call(Pid, stop);
+	undefined -> ok
+    end.
 
 
 debug(Pid, Value) when is_boolean(Value) ->
