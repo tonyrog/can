@@ -33,13 +33,9 @@
 #include <sys/ioctl.h>
 #include <net/if.h>
 
-#if defined(linux) 
-#include "can.h"
-#include "can/raw.h"
-#elif defined(__APPLE__)
-#include "can.h"
-#include "can/raw.h"
-#endif
+#include <linux/can.h>
+#include <linux/can/raw.h>
+
 
 #ifndef PF_CAN
 #define PF_CAN 29
