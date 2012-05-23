@@ -33,9 +33,15 @@
 #include <sys/ioctl.h>
 #include <net/if.h>
 
+// CROSS COMPILE
+// when missing can.h files add symbolic links to host ...
+// cd /usr/local/arm/arm-2007q1/arm-none-linux-gnueabi/libc/usr/include/linux
+// sudo ln -s /usr/include/linux/can.h
+// sudo ln -s /usr/include/can
+//
+
 #include <linux/can.h>
 #include <linux/can/raw.h>
-
 
 #ifndef PF_CAN
 #define PF_CAN 29
