@@ -102,7 +102,6 @@
 start_link() ->  start_link([]).
 
 start_link(Args) ->
-    error_logger:info_msg("~p: start_link: args = ~p\n", [?MODULE, Args]),
     gen_server:start_link({local, ?SERVER}, ?MODULE, Args, []).
 
 start() -> start([]).
@@ -278,7 +277,6 @@ input_from(Pid,Frame) when is_pid(Pid), is_record(Frame, can_frame) ->
 %% Description: Initiates the server
 %%--------------------------------------------------------------------
 init(_Args) ->
-    error_logger:info_msg("~p: init: args ignored pid = ~p\n", [?MODULE, self()]),
     process_flag(trap_exit, true),
     {ok, #s{}}.
 
