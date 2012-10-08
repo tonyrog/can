@@ -6,5 +6,5 @@
   {registered, [can_router]},
   {mod,{can_app,[]}},
   {env, []},
-  {applications,[kernel,stdlib,eapi,sl]}
+  {applications,[kernel,stdlib,eapi,uart]}
   ]}.
