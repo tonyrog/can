@@ -45,7 +45,7 @@ create(ID,Len,true,true,Intf,Data,Ts) ->
 
 create(ID,Len,Intf,Data,Ts) ->    
     Data1 = if is_binary(Data) -> Data;
-	      is_list(Data) -> binary_to_list(Data);
+	      is_list(Data) -> list_to_binary(Data);
 	      true -> erlang:error(?can_error_data)
 	    end,
     L = size(Data1),
