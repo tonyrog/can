@@ -91,7 +91,7 @@ debug(Pid, Value) when is_boolean(Value) ->
 %% Description: Initiates the server
 %%--------------------------------------------------------------------
 
-init([IfName,Opts]) ->
+init([IfName,_Opts]) ->
     case can_sock_drv:open() of
 	{ok,Port} ->
 	    case get_index(Port, IfName) of

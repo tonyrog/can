@@ -37,7 +37,7 @@
 
 open() ->
     Path = code:priv_dir(can),
-    {Type,_} = os:type(),
+    %% {Type,_} = os:type(),
     Driver = "can_sock_drv", 
     case erl_ddll:load(Path, Driver) of
 	ok ->
