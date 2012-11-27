@@ -23,7 +23,7 @@
 
 -module(can_probe).
 
--export([start/0,start/1,stop/1,init/1]).
+-export([start/0,start/1,start/2,stop/1,init/1]).
 -export([format_frame/1]).
 
 -include_lib("can/include/can.hrl").
@@ -34,6 +34,9 @@ start() ->
 start(Opts) ->
     can_udp:start(),  %% testing
     spawn_link(?MODULE, init, [Opts]).
+
+start(BusId, IOpts) when is_integer(BusId) ->
+    can_udp:start(BusId, IOpts).
 
 stop(Pid) ->
     Pid ! stop.
