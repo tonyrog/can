@@ -92,8 +92,7 @@ debug(Pid, Value) when is_boolean(Value) ->
 %%--------------------------------------------------------------------
 
 init([IfName,Opts]) ->
-    case eapi_drv:open([{driver_name, "can_sock_drv"},
-			{app, can} | Opts]) of
+    case can_sock_drv:open() of
 	{ok,Port} ->
 	    case get_index(Port, IfName) of
 		{ok,Index} ->
