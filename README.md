@@ -47,19 +47,19 @@ $ git clone git://github.com/tonyrog/can.git
 
 ### Linux virtual can driver
 
-## load the driver
+#### load the driver
     $ sudo modprobe vcan
 
-## Create a virtual CAN network interface called 'vcan0'
+#### Create a virtual CAN network interface called 'vcan0'
     $ sudo ip link add dev vcan0 type vcan
      
-## Activate a virtual CAN network interface called 'vcan0'
+#### Activate a virtual CAN network interface called 'vcan0'
     $ sudo ifconfig vcan0 up
 
-## Remote a (virtual) CAN network interface 'vcan0'
+#### Remote a (virtual) CAN network interface 'vcan0'
     $ sudp ip link del vcan0
     
-## Create a virtual CAN network interface
+#### Create a virtual CAN network interface
     $ sudo ip link add type vcan
     
 ...
