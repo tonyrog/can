@@ -305,6 +305,7 @@ reuse_port() ->
     [{raw,?SOL_SOCKET,?SO_REUSEPORT,<<1:32/native>>}].
 
 send_message(Mesg, S) when is_record(Mesg,can_frame) ->
+    lager:debug([{tag, frame}],"can_udp:send_message: [~p]", [Mesg]),
     if is_binary(Mesg#can_frame.data) ->
 	    send_bin_message(Mesg, Mesg#can_frame.data, S);
        true ->
