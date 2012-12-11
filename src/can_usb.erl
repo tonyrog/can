@@ -380,7 +380,8 @@ start_timer(S) ->
     S#s { status_timer = Timer }.
 
 send_message(Mesg, S) when is_record(Mesg,can_frame) ->
-    lager:debug([{tag, frame}],"can_usb:send_message: [~p]", [Mesg]),
+    lager:debug([{tag, frame}],"can_usb:send_message: [~s]", 
+		[can_probe:format_frame(Mesg)]),
     if is_binary(Mesg#can_frame.data) ->
 	    send_bin_message(Mesg, Mesg#can_frame.data, S);
        true ->

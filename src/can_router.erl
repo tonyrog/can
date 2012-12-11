@@ -562,7 +562,8 @@ error(_Sender, _Frame, S) ->
 %% and joined CAN interfaces
 %% 
 broadcast(Sender,Frame,S) ->
-    lager:debug([{tag, frame}],"can_router: broadcast: [~p]", [Frame]),
+    lager:debug([{tag, frame}],"can_router: broadcast: [~s]", 
+		[can_probe:format_frame(Frame)]),
     Sent0 = broadcast_apps(Sender, Frame, S#s.apps, 0),
     Sent  = broadcast_ifs(Frame, S#s.ifs, Sent0),
     ?dbg("CAN_ROUTER:broadcast: frame=~p, send=~w\n", [Frame, Sent]),
