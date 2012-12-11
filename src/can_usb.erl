@@ -478,7 +478,7 @@ command_close(S) ->
 
 %%
 %% command(S, Command [,Timeout]) ->
-%%    {ok,S'}
+%%    {ok,Reply,S'}
 %%  | {{error,Reason}, S'}
 %%
 command(S, Command) ->
@@ -486,8 +486,12 @@ command(S, Command) ->
 
 command(S, Command, Timeout) ->
     lager:debug("can_usb:command: [~p]", [Command]),
-    uart:send(S#s.uart, [Command, $\r]),
-    wait_reply(S,Timeout).
+    if S#s.uart =:= undefined ->
+	    {{error,eagain},S};
+       true ->
+	    uart:send(S#s.uart, [Command, $\r]),
+	    wait_reply(S,Timeout)
+    end.
 
 wait_reply(S,Timeout) ->
     receive
