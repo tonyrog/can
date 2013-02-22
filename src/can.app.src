@@ -1,10 +1,8 @@
 {application, can,
  [{description, "CAN"},
   {vsn, git},
-  {modules, [can, can_app, can_sup, can_usb, can_udp, can_sock, 
-	     can_sock_drv, can_router]},
   {registered, [can_router]},
   {mod,{can_app,[]}},
   {env, []},
-  {applications,[kernel,stdlib,eapi,uart]}
+  {applications,[kernel,stdlib,uart]}
   ]}.
