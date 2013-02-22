@@ -25,9 +25,13 @@
 
 -behaviour(gen_server).
 
+-include_lib("lager/include/log.hrl").
+-include("../include/can.hrl").
+
 %% API
 -export([start/0, start/1, start/2]).
--export([stop/1, debug/2]).
+-export([start_link/0, start_link/1, start_link/2]).
+-export([stop/1]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
@@ -39,22 +43,8 @@
 	  port,        %% port-id (registered as can_sock_prt)
 	  intf,        %% out-bound interface
 	  stat,        %% counter dictionary
-	  fs,          %% can_router:fs_new()
-	  debug=false  %% debug output (when debug compiled)
-	 }).	
-
--include("../include/can.hrl").
-
--ifdef(debug).
--define(dbg(S,Fmt,As), 
-	if (S)#s.debug =:= true ->
-		io:format((Fmt), (As));
-	   true ->
-		ok
-	end).
--else.
--define(dbg(S,Fmt,As), ok).
--endif.
+	  fs           %% can_router:fs_new()
+	}).	
 
 %%====================================================================
 %% API
@@ -73,11 +63,19 @@ start(IfName, Opts) ->
     can_router:start(),
     gen_server:start(?MODULE, [IfName,Opts], []).
 
+
+start_link() ->
+    start_link("can0").
+
+start_link(IfName) ->
+    start_link(IfName,[]).
+
+start_link(IfName, Opts) ->
+    can_router:start(),
+    gen_server:start_link(?MODULE, [IfName,Opts], []).
+
 stop(Pid) ->
     gen_server:call(Pid, stop).
-
-debug(Pid, Value) when is_boolean(Value) ->
-    gen_server:call(Pid, {debug,Value}).
 
 %%====================================================================
 %% gen_server callbacks
@@ -147,8 +145,6 @@ handle_call({get_filter,I}, _From, S) ->
 handle_call(list_filter, _From, S) ->
     Reply = can_router:fs_list(S#s.fs),
     {reply, Reply, S};
-handle_call({debug,Value}, _From, S) ->
-    {reply, ok, S#s { debug=Value}};
 handle_call(stop, _From, S) ->
     {stop, normal, ok, S};
 handle_call(_Request, _From, S) ->
@@ -185,7 +181,7 @@ handle_cast({list_filter,From}, S) ->
     gen_server:reply(From, Reply),
     {noreply, S};
 handle_cast(_Mesg, S) ->
-    ?dbg(S,"can_sock: handle_cast: ~p\n", [_Mesg]),
+    ?debug("can_sock: handle_cast: ~p\n", [_Mesg]),
     {noreply, S}.
 
 %%--------------------------------------------------------------------
@@ -200,7 +196,7 @@ handle_info({Port,{data,Frame}}, S) when
     S1 = input(Frame#can_frame{intf=S#s.id}, S),
     {noreply, S1};
 handle_info(_Info, S) ->
-    io:format("can_sock: got message=~p\n", [_Info]),
+    ?debug("can_sock: got message=~p\n", [_Info]),
     {noreply, S}.
 
 %%--------------------------------------------------------------------
