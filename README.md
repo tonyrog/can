@@ -56,7 +56,7 @@ $ git clone git://github.com/tonyrog/can.git
 #### Activate a virtual CAN network interface called 'vcan0'
     $ sudo ifconfig vcan0 up
 
-#### Remote a (virtual) CAN network interface 'vcan0'
+#### Remove a (virtual) CAN network interface 'vcan0'
     $ sudp ip link del vcan0
     
 #### Create a virtual CAN network interface
