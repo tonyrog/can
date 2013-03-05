@@ -40,11 +40,17 @@
 -record(s,
 	{
 	  id,          %% router id
+	  device,      %% device name
 	  port,        %% port-id (registered as can_sock_prt)
 	  intf,        %% out-bound interface
 	  stat,        %% counter dictionary
 	  fs           %% can_router:fs_new()
 	}).	
+
+-type can_sock_option() ::
+	{device,  DeviceName::string()}.
+%% currentl set with ip link command...
+%%	{bitrate, CANBitrate::integer()} |
 
 %%====================================================================
 %% API
@@ -54,28 +60,44 @@
 %% Description: Starts the server
 %%--------------------------------------------------------------------
 start() ->
-    start("can0").
+    start(0, [{device,"can0"}]).
 
-start(IfName) ->
-    start(IfName,[]).
+start(BusId) when is_integer(BusId) ->
+    start(BusId,[{device,"can0"}]);
+start(Dev) when is_list(Dev) ->  %% backwards compatible for a while..
+    start(0,[{device,Dev}]).
 
-start(IfName, Opts) ->
-    can_router:start(),
-    gen_server:start(?MODULE, [IfName,Opts], []).
+start(BusId, Opts) ->
+    can:start(),
+    ChildSpec= {{?MODULE,BusId}, {?MODULE, start_link, [BusId,Opts]},
+		permanent, 5000, worker, [?MODULE]},
+    supervisor:start_child(can_sup, ChildSpec).
 
-
+-spec start_link() -> {ok,pid()} | {error,Reason::term()}.
 start_link() ->
-    start_link("can0").
+    start_link(0, [{device,"can0"}]).
 
-start_link(IfName) ->
-    start_link(IfName,[]).
+-spec start_link(Arg :: integer() | string()) ->
+			{ok,pid()} | {error,Reason::term()}.
+start_link(BusId) when is_integer(BusId) ->
+    start_link(BusId,[{device,"can"++integer_to_list(BusId)}]);
+start_link(Dev) when is_list(Dev) ->  %% backwards compatible for a while..
+    start_link(0,[{device,Dev}]).
 
-start_link(IfName, Opts) ->
-    can_router:start(),
-    gen_server:start_link(?MODULE, [IfName,Opts], []).
+-spec start_link(BusId::integer(),Opts::[can_sock_option()]) ->
+			{ok,pid()} | {error,Reason::term()}.
+start_link(BusId, Opts) when is_integer(BusId), is_list(Opts) ->
+    gen_server:start_link(?MODULE, [BusId,Opts], []).
 
-stop(Pid) ->
-    gen_server:call(Pid, stop).
+-spec stop(BusId::integer()) -> ok | {error,Reason::term()}.
+
+stop(BusId) ->
+    case supervisor:terminate_child(can_sup, {?MODULE, BusId}) of
+	ok ->
+	    supervisor:delete_child(can_sup, {?MODULE, BusId});
+	Error ->
+	    Error
+    end.
 
 %%====================================================================
 %% gen_server callbacks
@@ -89,18 +111,20 @@ stop(Pid) ->
 %% Description: Initiates the server
 %%--------------------------------------------------------------------
 
-init([IfName,_Opts]) ->
+init([BusId,Opts]) ->
+    Device = proplists:get_value(device, Opts, "can0"),
     case can_sock_drv:open() of
 	{ok,Port} ->
-	    case get_index(Port, IfName) of
+	    case get_index(Port, Device) of
 		{ok,Index} ->
 		    case can_sock_drv:bind(Port,Index) of
 			ok ->
-			    case can_router:join({?MODULE,IfName,Index}) of
+			    case can_router:join({?MODULE,Device,BusId}) of
 				{ok,ID} ->
-				    {ok,#s { port = Port,
+				    {ok,#s { id = ID,
+					     device = Device,
+					     port = Port,
 					     intf = Index,
-					     id = ID,
 					     stat = dict:new(),
 					     fs=can_router:fs_new()
 					   }};

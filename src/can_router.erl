@@ -50,15 +50,10 @@
 
 -import(lists, [foreach/2, map/2, foldl/3]).
 
+-include_lib("lager/include/log.hrl").
 -include("../include/can.hrl").
 
 -define(SERVER, can_router).
-
--ifdef(debug).
--define(dbg(Fmt,As), io:format((Fmt), (As))).
--else.
--define(dbg(Fmt,As), ok).
--endif.
 
 %% Filter structure (also used by backends)
 -record(can_fs,
@@ -277,6 +272,7 @@ input_from(Pid,Frame) when is_pid(Pid), is_record(Frame, can_frame) ->
 %% Description: Initiates the server
 %%--------------------------------------------------------------------
 init(_Args) ->
+    lager:start(),  %% ok testing, remain or go?
     process_flag(trap_exit, true),
     {ok, #s{}}.
 
@@ -320,17 +316,19 @@ handle_call({detach,Pid}, _From, S) when is_pid(Pid) ->
 	    {reply,ok,S#s { apps = Apps -- [App] }}
     end;
 handle_call({join,Pid,Param}, _From, S) ->
-    case lists:keysearch(Param, #can_if.param, S#s.ifs) of
+    case lists:keytake(Param, #can_if.param, S#s.ifs) of
 	false ->
-	    Mon = erlang:monitor(process, Pid),
-	    ID = S#s.if_count,
-	    If = #can_if { pid=Pid, id=ID, mon=Mon, param=Param },
-	    Ifs1 = [If | S#s.ifs ],
-	    S1 = S#s { if_count = ID+1, ifs = Ifs1 },
-	    link(Pid),
+	    {ID,S1} = add_if(Pid,Param,S),
 	    {reply, {ok,ID}, S1};
-	{value,_} ->
-	    {reply, {error,ealready}, S}
+	{value,I,IFs} ->
+	    receive
+		{'EXIT', OldPid, _Reason} when I#can_if.pid =:= OldPid ->
+		    ?debug("join: restart detected\n", []),
+		    {ID,S1} = add_if(Pid,Param,S#s { ifs=IFs} ),
+		    {reply, {ok,ID}, S1}
+	    after 0 ->
+		    {reply, {error,ealready}, S}
+	    end
     end;
 handle_call({interface,I}, _From, S) when is_integer(I) ->
     case lists:keysearch(I, #can_if.id, S#s.ifs) of
@@ -446,12 +444,12 @@ handle_info({'EXIT', Pid, Reason}, S) ->
     case lists:keytake(Pid, #can_if.pid, S#s.ifs) of
 	{value,_If,Ifs} ->
 	    %% One of our interfaces died, log and ignore
-	    ?dbg("can_router: interface ~p died, reason ~p\n", [_If, Reason]),
+	    ?debug("can_router: interface ~p died, reason ~p\n", [_If, Reason]),
 	    {noreply,S#s { ifs = Ifs }};
 	false ->
 	    %% Someone else died, log and terminate
-	    ?dbg("can_router: linked process ~p died, reason ~p, terminating\n", 
-		 [Pid, Reason]),
+	    ?debug("can_router: linked process ~p died, reason ~p, terminating\n", 
+		   [Pid, Reason]),
 	    {stop, Reason, S}
     end;
 handle_info(_Info, S) ->
@@ -477,6 +475,15 @@ code_change(_OldVsn, S, _Extra) ->
 %%--------------------------------------------------------------------
 %%% Internal functions
 %%--------------------------------------------------------------------
+
+add_if(Pid,Param,S) ->
+    Mon = erlang:monitor(process, Pid),
+    ID = S#s.if_count,
+    If = #can_if { pid=Pid, id=ID, mon=Mon, param=Param },
+    Ifs1 = [If | S#s.ifs ],
+    S1 = S#s { if_count = ID+1, ifs = Ifs1 },
+    link(Pid),
+    {ID, S1}.
 
 %% fs_xxx functions are normally called from backends
 %% if filter returns true then pass the message through
@@ -553,7 +560,7 @@ filter_(_Frame, []) ->
 
 %% Error frame handling
 error(_Sender, _Frame, S) ->
-    ?dbg("can_router: error frame = ~p\n", [_Frame]),
+    ?debug("can_router: error frame = ~p\n", [_Frame]),
     %% FIXME: send to error handler
     S1 = S#s { stat_err = S#s.stat_err + 1 },
     S1.
@@ -566,7 +573,7 @@ broadcast(Sender,Frame,S) ->
 		[can_probe:format_frame(Frame)]),
     Sent0 = broadcast_apps(Sender, Frame, S#s.apps, 0),
     Sent  = broadcast_ifs(Frame, S#s.ifs, Sent0),
-    ?dbg("CAN_ROUTER:broadcast: frame=~p, send=~w\n", [Frame, Sent]),
+    ?debug("broadcast: frame=~p, send=~w\n", [Frame, Sent]),
     if Sent > 0 ->
 	    S#s { stat_out = S#s.stat_out + 1 };
        true ->

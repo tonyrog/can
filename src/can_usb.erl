@@ -49,12 +49,17 @@
 	  can_speed,       %% CAN bus speed
 	  status_interval, %% Check status interval
 	  status_timer,    %% Check status timer
-	  retry_timeout,   %% Timeout for open retry
+	  retry_interval,  %% Timeout for open retry
 	  acc = [],        %% accumulator for command replies
 	  buf = <<>>,      %% parse buffer
 	  stat,            %% counter dictionary
 	  fs               %% can_router:fs_new()
 	}).
+
+-define(DEFAULT_BITRATE,         250000).
+-define(DEFAULT_STATUS_INTERVAL, 1000).
+-define(DEFAULT_RETRY_INTERVAL,  2000).
+-define(DEFAULT_BAUDRATE,        115200).
 
 -define(SERVER, ?MODULE).
 
@@ -65,43 +70,67 @@
  	   true  -> [(Name)]
 	end).
 
-%%
-%% Some known devices (by me)
-%% /dev/tty.usbserial-LWQ8CA1K   (R550)
-%%
-%% Options:
-%%   {bitrate, Rate}         default 250000 KBit/s
-%%   {status_interval, Tms}  default 1000 = 1s
-%%
+-type can_usb_option() ::
+	{device,  DeviceName::string()} |
+	{baud,    DeviceBaud::integer()} |
+	{timeout, ReopenTimeout::timeout()} |
+	{bitrate, CANBitrate::integer()} |
+	{status_interval, Time::timeout()}.
+	
+-spec start() -> {ok,pid()} | {error,Reason::term()}.
 start() ->
     start(1,[]).
 
+-spec start(BudId::integer()) -> {ok,pid()} | {error,Reason::term()}.
 start(BusId) ->
     start(BusId,[]).
 
+-spec start(BudId::integer(),Opts::[can_usb_option()]) ->
+		   {ok,pid()} | {error,Reason::term()}.
 start(BusId, Opts) ->
-    can_router:start(),
-    gen_server:start(?MODULE, [BusId,Opts], []).
+    can:start(),
+    ChildSpec= {{?MODULE,BusId}, {?MODULE, start_link, [BusId,Opts]},
+		permanent, 5000, worker, [?MODULE]},
+    supervisor:start_child(can_sup, ChildSpec).
 
+
+-spec start_link() -> {ok,pid()} | {error,Reason::term()}.
 start_link() ->
     start_link(1,[]).
 
-start_link(BusId) ->
+-spec start_link(BudId::integer()) -> {ok,pid()} | {error,Reason::term()}.
+start_link(BusId) when is_integer(BusId) ->
     start_link(BusId,[]).
 
-start_link(BusId, Opts) ->
-    can_router:start(),
+-spec start_link(BusId::integer(),Opts::[can_usb_option()]) ->
+			{ok,pid()} | {error,Reason::term()}.
+start_link(BusId, Opts) when is_integer(BusId), is_list(Opts) ->
     gen_server:start_link(?MODULE, [BusId,Opts], []).
 
-stop(Pid) ->
-    gen_server:call(Pid, stop).
+-spec stop(BusId::integer()) -> ok | {error,Reason::term()}.
+
+stop(BusId) ->
+    case supervisor:terminate_child(can_sup, {?MODULE, BusId}) of
+	ok ->
+	    supervisor:delete_child(can_sup, {?MODULE, BusId});
+	Error ->
+	    Error
+    end.
+
+-spec set_bitrate(Pid::pid(), BitRate::integer()) ->
+			 ok | {error,Reason::term()}.
 
 set_bitrate(Pid, BitRate) ->
     gen_server:call(Pid, {set_bitrate, BitRate}).
 
+-spec get_bitrate(Pid::pid()) -> 
+			 {ok,BitRate::integer()} | {error,Reason::term()}.
 get_bitrate(Pid) ->
     gen_server:call(Pid, get_bitrate).
 
+%% collect when init device?
+-spec get_version(Pid::pid()) -> 
+			 {ok,Version::string()} | {error,Reason::term()}.
 get_version(Pid) ->
     case gen_server:call(Pid, {command, "V"}) of
 	{ok, [$V,H1,H0,S1,S0]} ->
@@ -110,6 +139,9 @@ get_version(Pid) ->
 	    Error
     end.
 
+%% collect when init device?
+-spec get_serial(Pid::pid()) ->
+			{ok,Version::string()} | {error,Reason::term()}.
 get_serial(Pid) ->
     case gen_server:call(Pid, {command, "N"}) of
 	{ok, [$N|BCDSn]} ->
@@ -118,6 +150,9 @@ get_serial(Pid) ->
 	    Error
     end.
 
+%% set as argument and initialize when device starts?
+-spec enable_timestamp(Pid::pid()) ->
+			      ok | {error,Reason::term()}.
 %% enable/disable timestamp - only when channel is closed!
 enable_timestamp(Pid) ->
     case gen_server:call(Pid, {command, "Z1"}) of
@@ -127,6 +162,9 @@ enable_timestamp(Pid) ->
 	    Error
     end.
 
+
+-spec disable_timestamp(Pid::pid()) ->
+			       ok | {error,Reason::term()}.
 disable_timestamp(Pid) ->
     case gen_server:call(Pid, {command, "Z0"}) of
 	{ok, _} ->
@@ -144,50 +182,56 @@ disable_timestamp(Pid) ->
 %%
 %%--------------------------------------------------------------------
 
-get_value(Key, EnvKey, Args, Default) ->
-    case os:getenv(EnvKey) of
-	false ->
-	    proplists:get_value(Key, Args, Default);
-	Value when is_integer(Default) ->
-	    list_to_integer(Value);
-	Value ->
-	    Value
-    end.
-
-init([Id,Args]) ->
-    lager:start(),  %% ok testing, remain or go?
-    DevKey = "CANUSB_DEVICE_" ++ integer_to_list(Id),
-    Device = case get_value(device, DevKey, Args, "") of
-		 "" ->
-		     case os:type() of
-			 {unix, darwin} -> "/dev/tty.usbserial";
-			 {unix,linux} -> "/dev/ttyUSB0";
-			 {win32,_} -> "COM10";
-			 {_, _} -> "/dev/serial"
-		     end;
-		 Dev -> Dev
+init([Id,Opts]) ->
+    RetryInterval = proplists:get_value(timeout, Opts, ?DEFAULT_RETRY_INTERVAL),
+    BitRate = proplists:get_value(bitrate,Opts,?DEFAULT_BITRATE),
+    Interval = proplists:get_value(status_interval,Opts,
+				   ?DEFAULT_STATUS_INTERVAL),
+    Speed = case proplists:get_value(baud, Opts) of
+		undefined ->
+		    %% maybe CANUSB_SPEED_<x>
+		    case os:getenv("CANUSB_SPEED") of
+			false -> ?DEFAULT_BAUDRATE;
+			""    -> ?DEFAULT_BAUDRATE;
+			Speed0 -> list_to_integer(Speed0)
+		    end;
+		Speed1 -> Speed1
+	    end,
+    Device = case proplists:get_value(device, Opts) of
+		 undefined ->
+		     %% try environment
+		     os:getenv("CANUSB_DEVICE_" ++ integer_to_list(Id));
+		 D -> D
 	     end,
-    Speed = get_value(baud, "CANUSB_SPEED", Args, 115200),
-    RetryTimeout = proplists:get_value(timeout, Args, 1),
-    BitRate = proplists:get_value(bitrate,Args,250000),
-    Interval = proplists:get_value(status_interval,Args,1000),
-    S = #s { device = Device,
-	     offset = Id,
-	     stat = dict:new(),
-	     baud_rate = Speed,
-	     can_speed = BitRate,
-	     status_interval = Interval,
-	     retry_timeout = RetryTimeout,
-	     fs=can_router:fs_new()
-	   },
-    ?info("can_usb: using device ~s@~w\n", [Device, BitRate]),
-    case open(S) of
-	{ok, S1} -> {ok, S1};
-	Error -> {stop, Error}
+    if Device =:= false; Device =:= "" ->
+	    ?error("can_usb: missing device argument"),
+	    {stop, einval};
+       true ->
+	    case can_router:join({?MODULE,Device,Id}) of
+		{ok,ID} ->
+		    ?debug("canusb:joined: intf=~w", [ID]),
+		    S = #s { id=ID,
+			     device = Device,
+			     offset = Id,
+			     stat = dict:new(),
+			     baud_rate = Speed,
+			     can_speed = BitRate,
+			     status_interval = Interval,
+			     retry_interval = RetryInterval,
+			     fs=can_router:fs_new()
+			   },
+		    ?info("can_usb: using device ~s@~w\n", [Device, BitRate]),
+		    case open(S) of
+			{ok, S1} -> {ok, S1};
+			Error -> {stop, Error}
+		    end;
+		Error ->
+		    {stop,Error}
+	    end
     end.
 
 
-open(S0=#s {device = DeviceName, baud_rate = Speed, offset = Offset, 
+open(S0=#s {device = DeviceName, baud_rate = Speed,
 	    status_interval = Interval, can_speed = BitRate }) ->
 
     DOpts = [{mode,binary},{baud,Speed},{packet,0},
@@ -197,24 +241,18 @@ open(S0=#s {device = DeviceName, baud_rate = Speed, offset = Offset,
     case uart:open(DeviceName,DOpts) of
 	{ok,U} ->
 	    ?debug("canusb:open: ~s@~w", [DeviceName,Speed]),
-	    case can_router:join({?MODULE,DeviceName,Offset}) of
-		{ok,ID} ->
-		    ?debug("canusb:joined: intf=~w", [ID]),
-		    Timer = erlang:start_timer(Interval,self(),status),
-		    S = S0#s { id=ID, uart=U, status_timer=Timer },
-		    canusb_sync(S),
-		    canusb_set_bitrate(S, BitRate),
-		    command_open(S),
-		    {ok, S};
-		false ->
-		    {error, sync_error}
-	    end;
+	    Timer = erlang:start_timer(Interval,self(),status),
+	    S = S0#s { uart=U, status_timer=Timer },
+	    canusb_sync(S),
+	    canusb_set_bitrate(S, BitRate),
+	    command_open(S),
+	    {ok, S};
 	{error, E} when E == eaccess;
 			E == enoent ->
-	    RetryTimeout = S0#s.retry_timeout,
+	    RetryTimeout = S0#s.retry_interval,
 	    ?debug("canusb:open: ~s@~w  error ~w, will try again "
-		   "in ~p secs.", [DeviceName,Speed,E,RetryTimeout]),
-	    timer:send_after(RetryTimeout * 1000, retry),
+		   "in ~p msecs.", [DeviceName,Speed,E,RetryTimeout]),
+	    timer:send_after(RetryTimeout, retry),
 	    {ok, S0};
 	Error ->
 	    lager:error("canusb:open: error ~w", [Error]),
@@ -321,10 +359,10 @@ handle_info({uart_error,U,Reason}, S) when U =:= S#s.uart ->
     {noreply, S};
 handle_info({uart_closed,U}, S) when U =:= S#s.uart ->
     uart:close(U),
-    RetryTimeout = S#s.retry_timeout,
-    lager:error("uart device closed, will try again in ~p secs.",
+    RetryTimeout = S#s.retry_interval,
+    lager:error("uart device closed, will try again in ~p msecs.",
 		[RetryTimeout]),
-    timer:send_after(RetryTimeout * 1000, retry),
+    timer:send_after(RetryTimeout, retry),
     {noreply, S#s { uart=undefined }};
 
 handle_info({timeout,Ref,status}, S) when Ref =:= S#s.status_timer ->

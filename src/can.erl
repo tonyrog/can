@@ -23,10 +23,15 @@
 
 -include("can.hrl").
 
+-export([start/0]).
 -export([send/2, send_ext/2]).
 -export([send/1, send_from/2]).
 -export([create/5,create/6,create/7]).
 -export([send/5, send_from/4, send_from/6]).
+
+start() ->
+    application:start(uart),
+    application:start(can).
 
 %%
 %% API for applicatins and backends to create CAN frames

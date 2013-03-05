@@ -23,6 +23,7 @@
 
 -behaviour(supervisor).
 
+-include_lib("lager/include/log.hrl").
 %% External exports
 -export([start_link/0, start_link/1, stop/1]).
 
@@ -33,7 +34,7 @@
 %%% API
 %%%----------------------------------------------------------------------
 start_link(Args) ->
-    error_logger:info_msg("~p: start_link: args = ~p\n", [?MODULE, Args]),
+    ?info("~p: start_link: args = ~p\n", [?MODULE, Args]),
     case supervisor:start_link({local, ?MODULE}, ?MODULE, Args) of
 	{ok, Pid} ->
 	    {ok, Pid, {normal, Args}};
@@ -54,7 +55,20 @@ stop(_StartArgs) ->
 %%----------------------------------------------------------------------
 %%----------------------------------------------------------------------
 init(Args) ->
-    error_logger:info_msg("~p: init: args = ~p,\n pid = ~p\n", [?MODULE, Args, self()]),
+    ?info("~p: init: args = ~p,\n pid = ~p\n", [?MODULE, Args, self()]),
     CanRouter = {can_router, {can_router, start_link, [Args]},
 		 permanent, 5000, worker, [can_router]},
-    {ok,{{one_for_all,0,300}, [CanRouter]}}.
+    Interfaces = 
+	lists:foldr(
+	  fun({CanMod,If,CanOpts},Acc) ->
+		  Spec={{CanMod,If}, 
+			{CanMod, start_link, [If,CanOpts]},
+			permanent, 5000, worker, [CanMod]},
+		  [Spec | Acc]
+	  end, [], 
+	  case application:get_env(can, interfaces) of
+	      undefined -> [];
+	      {ok,IfList} when is_list(IfList) ->
+		  IfList
+	  end),
+    {ok,{{one_for_one,3,5}, [CanRouter|Interfaces]}}.

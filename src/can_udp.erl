@@ -29,7 +29,7 @@
 -include("../include/can.hrl").
 
 %% API
--export([start/0, start/1, start/2, start/3]).
+-export([start/0, start/1, start/2]).
 -export([start_link/0, start_link/1, start_link/2]).
 -export([stop/1]).
 
@@ -65,6 +65,14 @@
 -define(CAN_MULTICAST_IF,   {0,0,0,0}).
 -define(CAN_UDP_PORT, 51712).
 
+-type can_udp_option() ::
+	{maddr,    inet:ip_address()} |
+	{ifaddr,   inet:ip_address()} |
+	{ttl,     integer()} |
+	{timeout, ReopenTimeout::integer()} |
+	{bitrate, CANBitrate::integer()} |
+	{status_interval, Time::timeout()}.
+
 %%====================================================================
 %% API
 %%====================================================================
@@ -72,38 +80,49 @@
 %% Function: start_link() -> {ok,Pid} | ignore | {error,Error}
 %% Description: Starts the server
 %%--------------------------------------------------------------------
+
+-spec start() -> {ok,pid()} | {error,Reason::term()}.
 start() ->
     start(0, []).
+
+-spec start(BudId::integer()) -> {ok,pid()} | {error,Reason::term()}.
 start(BusId) when is_integer(BusId)->
-    start(BusId, []);
-start(Name) ->
-    start(Name, 0, []).
-    
-start(Name, BusId) when is_integer(BusId)->
-    start(Name, BusId, []);
-start(BusId, IOpts) when is_integer(BusId) ->
-    can_router:start(),
-    gen_server:start(?MODULE, [BusId, IOpts], []).
+    start(BusId, []).
 
-start(Name, BusId, IOpts) ->
-    can_router:start(),
-    gen_server:start({local, Name}, ?MODULE, [BusId, IOpts], []).
+-spec start(BudId::integer(),Opts::[can_udp_option()]) ->
+		   {ok,pid()} | {error,Reason::term()}.
 
+start(BusId, Opts) when is_integer(BusId), is_list(Opts) ->
+    can:start(),
+    ChildSpec= {{?MODULE,BusId}, {?MODULE, start_link, [BusId,Opts]},
+		permanent, 5000, worker, [?MODULE]},
+    supervisor:start_child(can_sup, ChildSpec).
+
+-spec start_link() -> {ok,pid()} | {error,Reason::term()}.
 start_link() ->
     start_link(0, []).
+
+-spec start_link(BudId::integer()) -> {ok,pid()} | {error,Reason::term()}.
 start_link(BusId) when is_integer(BusId) ->
     start_link(BusId, []).
-    
-start_link(BusId,IOpts) ->
-    can_router:start(),
-    gen_server:start_link(?MODULE, [BusId, IOpts], []).
 
-stop(Pid) when is_pid(Pid) ->
-    gen_server:call(Pid, stop);
-stop(Name) ->
-    case whereis(Name) of
-	Pid when is_pid(Pid) ->  gen_server:call(Pid, stop);
-	undefined -> ok
+-spec start_link(BudId::integer(),Opts::[can_udp_option()]) ->
+		   {ok,pid()} | {error,Reason::term()}.    
+start_link(BusId,Opts) ->
+    ?debug("can_udp: start_link ~p ~p\n", [BusId,Opts]),
+    Res = gen_server:start_link(?MODULE, [BusId, Opts], []),
+    ?debug("can_udp: res ~p\n", [Res]),
+    Res.
+    
+
+-spec stop(BusId::integer()) -> ok | {error,Reason::term()}.
+
+stop(BusId) ->
+    case supervisor:terminate_child(can_sup, {?MODULE, BusId}) of
+	ok ->
+	    supervisor:delete_child(can_sup, {?MODULE, BusId});
+	Error ->
+	    Error
     end.
 
 %%====================================================================
@@ -117,11 +136,11 @@ stop(Name) ->
 %%                         {stop, Reason}
 %% Description: Initiates the server
 %%--------------------------------------------------------------------
-init([Id, IOpts]) ->
-    MAddr = proplists:get_value(maddr, IOpts, ?CAN_MULTICAST_ADDR),
-    Mttl  = proplists:get_value(ttl, IOpts, 1),
-    LAddr = ?CAN_MULTICAST_IF,
-    MPort = ?CAN_UDP_PORT+Id,
+init([BusId, Opts]) ->
+    MAddr = proplists:get_value(maddr, Opts, ?CAN_MULTICAST_ADDR),
+    Mttl  = proplists:get_value(ttl, Opts, 1),
+    LAddr = proplists:get_value(ifaddr, Opts, ?CAN_MULTICAST_IF),
+    MPort = ?CAN_UDP_PORT+BusId,
     
     SendOpts = [{active,false},{multicast_if,LAddr},
 		{multicast_ttl,Mttl},{multicast_loop,true}],
@@ -135,7 +154,7 @@ init([Id, IOpts]) ->
 	    {ok,OutPort} = inet:port(Out),
 	    case catch gen_udp:open(MPort,RecvOpts++MultiOpts) of
 		{ok,In} ->
-		    case can_router:join({?MODULE,MAddr,MPort}) of
+		    case can_router:join({?MODULE,MAddr,BusId}) of
 			{ok,ID} ->
 			    {ok,#s{ in=In, mport=MPort,
 				    stat = dict:new(),

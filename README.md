@@ -43,6 +43,22 @@ Clone the repository in a suitable location:
 $ git clone git://github.com/tonyrog/can.git
 ```
 ### Configurating
+
+Interfaces can be added and remove dynamically, but can also
+be initialized in the environment like:
+
+    {can, [{interfaces,
+             [{can_udp, 1, []},
+              {can_udp, 2, [{ttl,0}]},
+	      {can_usb, 1, [{device, "/dev/tty.usbserial-LWQ6UYOM"},
+                            {bitrate, 125000}]},
+              {can_usb, 2, [{device, "/dev/tty.usbserial-LWQ8CA1K"},
+                            {bitrate, 250000}]},
+              {can_sock, "can0", []},
+              {can_sock, "vcan0", []}]}]}
+	   
+The interfaces in the environment will get under supervision.
+		     
 #### Concepts
 
 ### Linux virtual can driver
