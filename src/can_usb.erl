@@ -209,7 +209,7 @@ init([Id,Opts]) ->
        true ->
 	    case can_router:join({?MODULE,Device,Id}) of
 		{ok,ID} ->
-		    ?debug("canusb:joined: intf=~w", [ID]),
+		    ?debug("can_usb:joined: intf=~w", [ID]),
 		    S = #s { id=ID,
 			     device = Device,
 			     offset = Id,
