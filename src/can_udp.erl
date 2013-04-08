@@ -96,7 +96,7 @@ start(BusId, Opts) when is_integer(BusId), is_list(Opts) ->
     can:start(),
     ChildSpec= {{?MODULE,BusId}, {?MODULE, start_link, [BusId,Opts]},
 		permanent, 5000, worker, [?MODULE]},
-    supervisor:start_child(can_sup, ChildSpec).
+    supervisor:start_child(can_if_sup, ChildSpec).
 
 -spec start_link() -> {ok,pid()} | {error,Reason::term()}.
 start_link() ->
@@ -118,9 +118,9 @@ start_link(BusId,Opts) ->
 -spec stop(BusId::integer()) -> ok | {error,Reason::term()}.
 
 stop(BusId) ->
-    case supervisor:terminate_child(can_sup, {?MODULE, BusId}) of
+    case supervisor:terminate_child(can_if_sup, {?MODULE, BusId}) of
 	ok ->
-	    supervisor:delete_child(can_sup, {?MODULE, BusId});
+	    supervisor:delete_child(can_if_sup, {?MODULE, BusId});
 	Error ->
 	    Error
     end.

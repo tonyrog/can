@@ -1,4 +1,4 @@
-%%%---- BEGIN COPYRIGHT --------------------------------------------------------
+%%%---- BEGIN COPYRIGHT -------------------------------------------------------
 %%%
 %%% Copyright (C) 2007 - 2012, Rogvall Invest AB, <tony@rogvall.se>
 %%%
@@ -13,13 +13,14 @@
 %%% This software is distributed on an "AS IS" basis, WITHOUT WARRANTY OF ANY
 %%% KIND, either express or implied.
 %%%
-%%%---- END COPYRIGHT ----------------------------------------------------------
-%%%-------------------------------------------------------------------
-%%% File    : can_usb.erl
-%%% Author  : Tony Rogvall <tony@rogvall.se>
-%%% Description : CAN USB (VC) interface 
+%%%---- END COPYRIGHT ---------------------------------------------------------
+%%% @author Tony Rogvall <tony@rogvall.se>
+%%% @copyright (C) 2013, Tony Rogvall
+%%% @doc
+%%%   CAN USB (VC) interface
 %%%
-%%% Created : 17 Sep 2009 by Tony Rogvall <tony@rogvall.se>
+%%% Created: 17 Sep 2009 by Tony Rogvall
+%%% @end
 %%%-------------------------------------------------------------------
 -module(can_usb).
 
@@ -29,13 +30,21 @@
 -include("../include/can.hrl").
 
 %% API
--export([start/0, start/1, start/2]).
--export([start_link/0, start_link/1, start_link/2]).
+-export([start/0, 
+	 start/1, 
+	 start/2]).
+-export([start_link/0, 
+	 start_link/1, 
+	 start_link/2]).
 -export([stop/1]).
 
 %% gen_server callbacks
--export([init/1, handle_call/3, handle_cast/2, handle_info/2,
-	 terminate/2, code_change/3]).
+-export([init/1, 
+	 handle_call/3, 
+	 handle_cast/2, 
+	 handle_info/2,
+	 terminate/2, 
+	 code_change/3]).
 
 -compile(export_all).
 
@@ -91,7 +100,7 @@ start(BusId, Opts) ->
     can:start(),
     ChildSpec= {{?MODULE,BusId}, {?MODULE, start_link, [BusId,Opts]},
 		permanent, 5000, worker, [?MODULE]},
-    supervisor:start_child(can_sup, ChildSpec).
+    supervisor:start_child(can_if_sup, ChildSpec).
 
 
 -spec start_link() -> {ok,pid()} | {error,Reason::term()}.
@@ -110,9 +119,9 @@ start_link(BusId, Opts) when is_integer(BusId), is_list(Opts) ->
 -spec stop(BusId::integer()) -> ok | {error,Reason::term()}.
 
 stop(BusId) ->
-    case supervisor:terminate_child(can_sup, {?MODULE, BusId}) of
+    case supervisor:terminate_child(can_if_sup, {?MODULE, BusId}) of
 	ok ->
-	    supervisor:delete_child(can_sup, {?MODULE, BusId});
+	    supervisor:delete_child(can_if_sup, {?MODULE, BusId});
 	Error ->
 	    Error
     end.

@@ -1,4 +1,4 @@
-%%%---- BEGIN COPYRIGHT --------------------------------------------------------
+%%%---- BEGIN COPYRIGHT -------------------------------------------------------
 %%%
 %%% Copyright (C) 2007 - 2012, Rogvall Invest AB, <tony@rogvall.se>
 %%%
@@ -13,7 +13,7 @@
 %%% This software is distributed on an "AS IS" basis, WITHOUT WARRANTY OF ANY
 %%% KIND, either express or implied.
 %%%
-%%%---- END COPYRIGHT ----------------------------------------------------------
+%%%---- END COPYRIGHT ---------------------------------------------------------
 %%%-------------------------------------------------------------------
 %%% @author Tony Rogvall <tony@rogvall.se>
 %%% @copyright (C) 2010, Tony Rogvall
@@ -26,15 +26,19 @@
 
 -behaviour(application).
 
+-include_lib("lager/include/log.hrl").
+
 %% Application callbacks
--export([start/2, stop/1]).
+-export([start/2,
+	 start/0,
+	 stop/1,
+	 stop/0]).
 
 %%%===================================================================
 %%% Application callbacks
 %%%===================================================================
 
 %%--------------------------------------------------------------------
-%% @private
 %% @spec start(StartType, StartArgs) -> {ok, Pid} |
 %%                                      {ok, Pid, State} |
 %%                                      {error, Reason}
@@ -50,14 +54,18 @@
 %% @end
 %%--------------------------------------------------------------------
 start(_StartType, _StartArgs) ->
-    Args = case application:get_env(arguments) of
+    Args = case application:get_env(can, arguments) of
 	       undefined -> [];
 	       {ok,As} -> As
 	   end,
     can_sup:start_link(Args).
 
-%%--------------------------------------------------------------------
 %% @private
+start() ->
+    application:start(uart),
+    application:start(can).
+
+%%--------------------------------------------------------------------
 %% @doc
 %% This function is called whenever an application has stopped. It
 %% is intended to be the opposite of Module:start/2 and should do
@@ -67,5 +75,10 @@ start(_StartType, _StartArgs) ->
 %% @end
 %%--------------------------------------------------------------------
 stop(_State) ->
+    ?debug("can_app: stop/1.",  []),
     ok.
 
+%% @private
+stop() ->
+    application:stop(can),
+    application:stop(uart).

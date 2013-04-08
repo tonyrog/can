@@ -1,4 +1,4 @@
-%%%---- BEGIN COPYRIGHT --------------------------------------------------------
+%%%---- BEGIN COPYRIGHT -------------------------------------------------------
 %%%
 %%% Copyright (C) 2007 - 2012, Rogvall Invest AB, <tony@rogvall.se>
 %%%
@@ -13,13 +13,14 @@
 %%% This software is distributed on an "AS IS" basis, WITHOUT WARRANTY OF ANY
 %%% KIND, either express or implied.
 %%%
-%%%---- END COPYRIGHT ----------------------------------------------------------
-%%%-------------------------------------------------------------------
-%%% File    : can_router.erl
-%%% Author  : Tony Rogvall <tony@PBook.lan>
-%%% Description : CAN router
+%%%---- END COPYRIGHT ---------------------------------------------------------
+%%% @author Tony Rogvall <tony@rogvall.se>
+%%% @copyright (C) 2013, Tony Rogvall
+%%% @doc
+%%%   CAN router
 %%%
-%%% Created :  7 Jan 2008 by Tony Rogvall <tony@PBook.lan>
+%%% Created: 7 Jan 2008 by Tony Rogvall
+%%% @end
 %%%-------------------------------------------------------------------
 -module(can_router).
 
@@ -98,11 +99,6 @@ start_link() ->  start_link([]).
 
 start_link(Args) ->
     gen_server:start_link({local, ?SERVER}, ?MODULE, Args, []).
-
-start() -> start([]).
-
-start(Args) ->
-    gen_server:start({local, ?SERVER}, ?MODULE, Args, []).
 
 statistics() ->
     IFs = gen_server:call(?SERVER, interfaces),
@@ -213,9 +209,6 @@ call_if(Id, Request) ->
 	    Error
     end.
 
-stop() ->
-    gen_server:call(?SERVER, stop).
-
 %% attach - simulated can bus or application
 attach() ->
     gen_server:call(?SERVER, {attach, self()}).
@@ -260,6 +253,21 @@ input(Frame) when is_record(Frame, can_frame) ->
 input_from(Pid,Frame) when is_pid(Pid), is_record(Frame, can_frame) ->
     gen_server:cast(?SERVER, {input, Pid, Frame}).
 
+%%--------------------------------------------------------------------
+%% Shortcut API
+%%--------------------------------------------------------------------
+start() -> start([]).
+
+start(Args) ->
+    application:load(can),
+    application:set_env(can, arguments, Args),
+    application:set_env(can, interfaces, []),
+    application:start(can).
+
+stop() ->
+    application:stop(can).
+
+%%--------------------------------------------------------------------
 %%====================================================================
 %% gen_server callbacks
 %%====================================================================
@@ -294,6 +302,7 @@ handle_call({attach,Pid}, _From, S) when is_pid(Pid) ->
     Apps = S#s.apps,
     case lists:keysearch(Pid, #can_app.pid, Apps) of
 	false ->
+	    ?debug("can_router: process ~p attached.",  [Pid]),
 	    Mon = erlang:monitor(process, Pid),
 	    %% We may extend app interface someday - now = 0
 	    App = #can_app { pid=Pid, mon=Mon, interface=0 },
@@ -308,6 +317,7 @@ handle_call({detach,Pid}, _From, S) when is_pid(Pid) ->
 	false ->
 	    {reply, ok, S};
 	{value,App=#can_app {}} ->
+	    ?debug("can_router: process ~p detached.",  [Pid]),
 	    Mon = App#can_app.mon,
 	    erlang:demonitor(Mon),
 	    receive {'DOWN',Mon,_,_,_} -> ok
@@ -318,6 +328,7 @@ handle_call({detach,Pid}, _From, S) when is_pid(Pid) ->
 handle_call({join,Pid,Param}, _From, S) ->
     case lists:keytake(Param, #can_if.param, S#s.ifs) of
 	false ->
+	    ?debug("can_router: process ~p, param ~p joined.",  [Pid, Param]),
 	    {ID,S1} = add_if(Pid,Param,S),
 	    {reply, {ok,ID}, S1};
 	{value,I,IFs} ->
@@ -433,10 +444,14 @@ handle_info({'DOWN',_Ref,process,Pid,_Reason},S) ->
 		false ->
 		    {noreply, S};
 		{value,_If,Ifs} ->
-		    %% FIXME: Restart?
+		    ?debug("can_router: interface ~p died, reason ~p\n", 
+			   [_If, _Reason]),
+		    %% Restart done by can_if_sup
 		    {noreply,S#s { ifs = Ifs }}
 	    end;
 	{value,_App,Apps} ->
+	    ?debug("can_router: application ~p died, reason ~p\n", 
+		   [_App, _Reason]),
 	    %% FIXME: Restart?
 	    {noreply,S#s { apps = Apps }}
     end;
@@ -444,7 +459,8 @@ handle_info({'EXIT', Pid, Reason}, S) ->
     case lists:keytake(Pid, #can_if.pid, S#s.ifs) of
 	{value,_If,Ifs} ->
 	    %% One of our interfaces died, log and ignore
-	    ?debug("can_router: interface ~p died, reason ~p\n", [_If, Reason]),
+	    ?debug("can_router: interface ~p died, reason ~p\n", 
+		   [_If, Reason]),
 	    {noreply,S#s { ifs = Ifs }};
 	false ->
 	    %% Someone else died, log and terminate

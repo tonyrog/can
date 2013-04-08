@@ -14,15 +14,15 @@
 %%% KIND, either express or implied.
 %%%
 %%%---- END COPYRIGHT ---------------------------------------------------------
-%%% @author Tony Rogvall <tony@rogvall.se>
+%%% @author Malotte W Lönne <malotte@malotte.net>
 %%% @copyright (C) 2013, Tony Rogvall
 %%% @doc
-%%%  Can supervisor
+%%%  Can bus interface supervisor
 %%%
-%%% Created: 28 Aug 2006  by Tony Rogvall
+%%% Created: 2013 by Malotte W Lönne 
 %%% @end
 
--module(can_sup).
+-module(can_if_sup).
 
 -behaviour(supervisor).
 
@@ -30,7 +30,7 @@
 %% external exports
 -export([start_link/0, 
 	 start_link/1, 
-	 stop/0]).
+	 stop/1]).
 
 %% supervisor callbacks
 -export([init/1]).
@@ -50,8 +50,8 @@ start_link(Args) ->
 start_link() ->
     supervisor:start_link({local,?MODULE}, ?MODULE, []).
 
-stop() ->
-    exit(normal).
+stop(_StartArgs) ->
+    ok.
 
 %%%----------------------------------------------------------------------
 %%% Callback functions from supervisor
@@ -61,8 +61,18 @@ stop() ->
 %%----------------------------------------------------------------------
 init(Args) ->
     ?info("~p: init: args = ~p,\n pid = ~p\n", [?MODULE, Args, self()]),
-    CanRouter = {can_router, {can_router, start_link, [Args]},
-		 permanent, 5000, worker, [can_router]},
-    CanIfSup = {can_if_sup, {can_if_sup, start_link, []},
-		 permanent, 5000, worker, [can_if_sup]},
-    {ok,{{one_for_all,3,5}, [CanRouter, CanIfSup]}}.
+    Interfaces = 
+	lists:foldr(
+	  fun({CanMod,If,CanOpts},Acc) ->
+		  Spec={{CanMod,If}, 
+			{CanMod, start_link, [If,CanOpts]},
+			permanent, 5000, worker, [CanMod]},
+		  [Spec | Acc]
+	  end, [], 
+	  case application:get_env(can, interfaces) of
+	      undefined -> [];
+	      {ok,IfList} when is_list(IfList) ->
+		  IfList
+	  end),
+    ?info("~p: init: starting interfaces ~p", [?MODULE, Interfaces]),
+    {ok,{{one_for_one,3,5}, Interfaces}}.
