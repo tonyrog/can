@@ -79,6 +79,9 @@ typedef struct _x_can_frame
 #define CAN_SOCK_DRV_CMD_RECV_OWN_MESSAGES 5
 #define CAN_SOCK_DRV_CMD_BIND 6
 #define CAN_SOCK_DRV_CMD_SEND 7
+#define CAN_SOCK_DRV_CMD_SET_FILTER 8
+
+#define MAX_FILTER 256  // fixme
 
 static inline uint32_t get_uint32(char* ptr)
 {
@@ -252,6 +255,7 @@ static char* format_command(int cmd)
     case CAN_SOCK_DRV_CMD_RECV_OWN_MESSAGES: return "revc_own_messages";
     case CAN_SOCK_DRV_CMD_BIND:  return "bind";
     case CAN_SOCK_DRV_CMD_SEND:  return "send";
+    case CAN_SOCK_DRV_CMD_SET_FILTER: return "set_filter";
     default: return "????";
     }
 }
@@ -309,6 +313,30 @@ static ErlDrvSSizeT can_sock_drv_ctl(ErlDrvData d,
 	m = (can_err_mask_t) get_uint32(buf);
 	r = setsockopt(DTHREAD_EVENT(ctx->sock),
 		       SOL_CAN_RAW,CAN_RAW_ERR_FILTER,&m,sizeof(m));
+	if (r < 0)
+	    return ctl_reply_error(errno, rbuf, rsize);
+	else
+	    return ctl_reply_ok(rbuf, rsize);
+    }
+
+    case CAN_SOCK_DRV_CMD_SET_FILTER: {
+	struct can_filter rfilter[MAX_FILTER];
+	char* ptr = buf;
+	int r, i;
+	size_t n;
+
+	if ((len & 7) != 0) 
+	    return ctl_reply_error(EINVAL, rbuf, rsize);
+	n = len >> 3;
+	if (n > MAX_FILTER)
+	    return ctl_reply_error(EINVAL, rbuf, rsize);
+	for (i = 0; i < n; i++) {
+	    rfilter[i].can_id   = get_uint32(ptr);
+	    rfilter[i].can_mask = get_uint32(ptr+4);
+	    ptr += 8;
+	}
+	r = setsockopt(DTHREAD_EVENT(ctx->sock),
+		       SOL_CAN_RAW,CAN_RAW_FILTER,&rfilter,len);
 	if (r < 0)
 	    return ctl_reply_error(errno, rbuf, rsize);
 	else

@@ -159,10 +159,14 @@ handle_call(statistics,_From,S) ->
     {reply,{ok,Stat}, S};
 handle_call({add_filter,F}, _From, S) ->
     {I,Fs} = can_router:fs_add(F,S#s.fs),
-    {reply, {ok,I}, S#s { fs=Fs }};
+    S1 = S#s { fs=Fs },
+    apply_filters(S1),
+    {reply, {ok,I}, S1};
 handle_call({del_filter,I}, _From, S) ->
     {Reply,Fs} = can_router:fs_del(I,S#s.fs),
-    {reply, Reply, S#s { fs=Fs }};
+    S1 = S#s { fs=Fs },
+    apply_filters(S1),
+    {reply, Reply, S1};
 handle_call({get_filter,I}, _From, S) ->
     Reply = can_router:fs_get(I,S#s.fs),
     {reply, Reply, S};  
@@ -190,12 +194,16 @@ handle_cast({statistics,From},S) ->
     {noreply, S};
 handle_cast({add_filter,From,F}, S) ->
     {I,Fs} = can_router:fs_add(F,S#s.fs),
+    S1 = S#s { fs=Fs },
     gen_server:reply(From, {ok,I}),
-    {noreply, S#s { fs=Fs }};
+    apply_filters(S1),
+    {noreply, S1};
 handle_cast({del_filter,From,I}, S) ->
     {Reply,Fs} = can_router:fs_del(I,S#s.fs),
+    S1 = S#s { fs=Fs },
     gen_server:reply(From, Reply),
-    {noreply, S#s { fs=Fs }};
+    apply_filters(S1),
+    {noreply, S1};
 handle_cast({get_filter,From,I}, S) ->
     Reply = can_router:fs_get(I,S#s.fs),
     gen_server:reply(From, Reply),
@@ -278,13 +286,33 @@ oerr(Reason,S) ->
 %%    S1 = count(input_error, S),
 %%    count({input_error,Reason}, S1).
 
-%% Push this into the driver!!!
+apply_filters(S) ->
+    {ok,Filter} = can_router:fs_list(S#s.fs),
+    Fs = [F || {_I,F} <- Filter],
+    %% io:format("apply_filters: fs=~p\n", [Fs]),
+    _Res =
+	if Fs =:= [] ->
+		All = #can_filter { id = 0, mask = 0 },
+		can_sock_drv:set_filters(S#s.port, [All]);
+	   true ->
+		can_sock_drv:set_filters(S#s.port, Fs)
+	end,
+    %% io:format("Res = ~p\n", [_Res]),
+    ok.
+
+%% The filters are pushed onto the driver, here we
+%% should check that this is also the case.
 input(Frame, S) ->
-    case can_router:fs_input(Frame, S#s.fs) of
-	true ->
-	    can_router:input(Frame),
-	    count(input_frames, S);
-	false ->
-	    S1 = count(input_frames, S),
-	    count(filter_frames, S1)
-    end.
+    %% read number of filtered frames ?
+    can_router:input(Frame),
+    count(input_frames, S).
+
+%%    case can_router:fs_input(Frame, S#s.fs) of
+%%	true ->
+%%	    can_router:input(Frame),
+%%	    count(input_frames, S);
+%%	false ->
+%%	    S1 = count(input_frames, S),
+%%	    count(filter_frames, S1)
+%%  end.
+

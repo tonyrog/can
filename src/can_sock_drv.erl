@@ -26,6 +26,7 @@
 -export([send/3]).
 -export([recv_own_messages/2]).
 -export([set_error_filter/2]).
+-export([set_filters/2]).
 
 -include("../include/can.hrl").
 -include("can_sock_drv.hrl").
@@ -60,6 +61,10 @@ ifindex(Port,Name) when is_port(Port) ->
 
 set_error_filter(Port,Mask) when is_port(Port), is_integer(Mask), Mask>0-> 
     call(Port,?CAN_SOCK_DRV_CMD_SET_ERROR_FILTER, <<Mask:32>>).
+
+set_filters(Port, Fs) when is_port(Port), is_list(Fs) ->
+    Bytes = [<<(F#can_filter.id):32,(F#can_filter.mask):32>> || F <- Fs ],
+    call(Port,?CAN_SOCK_DRV_CMD_SET_FILTER, Bytes).
 
 set_loopback(Port,Enable) when is_port(Port), is_boolean(Enable) -> 
     Value=if Enable -> 1; true -> 0 end,
