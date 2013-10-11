@@ -39,7 +39,7 @@ open() ->
     Path = code:priv_dir(can),
     %% {Type,_} = os:type(),
     Driver = "can_sock_drv", 
-    case erl_ddll:load(Path, Driver) of
+    case load_driver(Path, Driver) of
 	ok ->
 	    Command = Driver,
 	    {ok,erlang:open_port({spawn_driver, Command}, [])};
@@ -95,4 +95,22 @@ call(Port, Cmd, Args) ->
 	<<?CTL_ERROR,Error/binary>> -> {error, binary_to_list(Error)};
 	<<?CTL_STRING,String/binary>> -> {ok, binary_to_list(String)};
 	<<?CTL_UINT32,X:32>> -> {ok, X}
+    end.
+
+%% can be replaced with dloader later
+load_driver(Path, Name) ->
+    Ext = filename:extension(Name),
+    Base = filename:basename(Name,Ext),
+    NameExt = case os:type() of
+		  {unix,_} ->  Base++".so";
+		  {win32,_} -> Base++".dll"
+	      end,
+    SysPath = filename:join(Path,erlang:system_info(system_architecture)),
+    case filelib:is_regular(filename:join(SysPath,NameExt)) of
+	true -> erl_ddll:load(SysPath, Name);
+	false ->
+	    case filelib:is_regular(filename:join(Path,NameExt)) of
+		true -> erl_ddll:load(Path, Name);
+		false -> {error, enoent}
+	    end
     end.

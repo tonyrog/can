@@ -39,7 +39,6 @@
 %%% API
 %%%----------------------------------------------------------------------
 start_link(Args) ->
-    ?info("~p: start_link: args = ~p\n", [?MODULE, Args]),
     case supervisor:start_link({local, ?MODULE}, ?MODULE, Args) of
 	{ok, Pid} ->
 	    {ok, Pid, {normal, Args}};
@@ -59,8 +58,7 @@ stop(_StartArgs) ->
 
 %%----------------------------------------------------------------------
 %%----------------------------------------------------------------------
-init(Args) ->
-    ?info("~p: init: args = ~p,\n pid = ~p\n", [?MODULE, Args, self()]),
+init(_Args) ->
     Interfaces = 
 	lists:foldr(
 	  fun({CanMod,If,CanOpts},Acc) ->
@@ -74,5 +72,4 @@ init(Args) ->
 	      {ok,IfList} when is_list(IfList) ->
 		  IfList
 	  end),
-    ?info("~p: init: starting interfaces ~p", [?MODULE, Interfaces]),
     {ok,{{one_for_one,3,5}, Interfaces}}.

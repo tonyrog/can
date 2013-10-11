@@ -418,12 +418,14 @@ static ErlDrvSSizeT can_sock_drv_ctl(ErlDrvData d,
 static void can_sock_drv_output(ErlDrvData d, char* buf, ErlDrvSizeT len)
 {
     (void) d;
+    (void) buf;
+    (void) len;
     DEBUGF("can_sock_drv: output");
 }
 
-
 static void can_sock_drv_ready_input(ErlDrvData d, ErlDrvEvent e)
 {
+    (void) e;
     drv_ctx_t* ctx = (drv_ctx_t*) d;
     DEBUGF("can_sock_drv: ready_input called");
     struct sockaddr_can addr;
@@ -462,7 +464,7 @@ static void can_sock_drv_ready_input(ErlDrvData d, ErlDrvEvent e)
 	}
 	dterm_tuple_end(&t, &m1);
 	// dterm_dump(stderr, dterm_data(&t), dterm_used_size(&t));
-	driver_output_term(ctx->port, dterm_data(&t), dterm_used_size(&t));
+	DOUTPUT_TERM(ctx, dterm_data(&t), dterm_used_size(&t));
 	dterm_finish(&t);
     }
 }
