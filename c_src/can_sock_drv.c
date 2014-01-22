@@ -215,7 +215,7 @@ static ErlDrvData can_sock_drv_start(ErlDrvPort port, char* command)
     ctx->dport = driver_mk_port(port);
     ctx->owner = driver_connected(port);
     ctx->intf = 0;
-    ctx->sock = (ErlDrvEvent)s;
+    ctx->sock = (ErlDrvEvent)((long)s);
     return (ErlDrvData) ctx;
 }
 
@@ -458,7 +458,7 @@ static void can_sock_drv_ready_input(ErlDrvData d, ErlDrvEvent e)
     DEBUGF("can_sock_drv: ready_input called");
     struct sockaddr_can addr;
     struct can_frame frame;
-    size_t len = sizeof(addr);
+    socklen_t len = sizeof(addr);
 
     if (recvfrom(DTHREAD_EVENT(ctx->sock), &frame, sizeof(frame),
 		 0, (struct sockaddr*) &addr, &len) == sizeof(frame)) {
