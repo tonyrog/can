@@ -295,7 +295,19 @@ init(_Args) ->
 %%--------------------------------------------------------------------
 handle_call({send,Pid,Frame},_From, S)
   when is_pid(Pid),is_record(Frame, can_frame) ->
-    S1 = broadcast(Pid,Frame,S),
+    I = Frame#can_frame.intf,
+    S1 =
+	if I =:= 0; I =:= undefined ->
+		broadcast(Pid,Frame,S);
+	   true -> %% single cast must match the interface number
+		case lists:keyfind(I, #can_if.id, S#s.ifs) of
+		    false ->
+			S;
+		    IF ->
+			gen_server:cast(IF#can_if.pid, {send, Frame}),
+			S#s { stat_out = S#s.stat_out + 1 }
+		end
+	end,
     {reply, ok, S1}; 
 
 handle_call({attach,Pid}, _From, S) when is_pid(Pid) ->
