@@ -140,13 +140,14 @@ init([BusId, Opts]) ->
     MAddr = proplists:get_value(maddr, Opts, ?CAN_MULTICAST_ADDR),
     Mttl  = proplists:get_value(ttl, Opts, 1),
     LAddr = proplists:get_value(ifaddr, Opts, ?CAN_MULTICAST_IF),
+    RAddr = ?CAN_MULTICAST_IF,
     MPort = ?CAN_UDP_PORT+BusId,
     
     SendOpts = [{active,false},{multicast_if,LAddr},
 		{multicast_ttl,Mttl},{multicast_loop,true}],
 
     RecvOpts = [{reuseaddr,true},{mode,binary},{active,false},
-		{ifaddr,LAddr}] ++reuse_port(),
+		{ifaddr,RAddr}] ++reuse_port(),
 
     MultiOpts = [{add_membership,{MAddr,LAddr}},{active,true}],
     case gen_udp:open(0, SendOpts) of
