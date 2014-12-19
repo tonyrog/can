@@ -55,6 +55,7 @@
 #define CTL_STRING 3
 
 #include "dthread.h"
+#include "dlog.h"
 
 typedef struct _drv_ctx_t
 {
@@ -177,7 +178,8 @@ static ErlDrvSSizeT ctl_reply_u32(uint32_t v, char** rbuf, ErlDrvSizeT rsize)
 
 static int can_sock_drv_init(void)
 {
-    dlib_set_debug(DLOG_DEFAULT);
+    dlog_init();
+    dlog_set_debug(DLOG_DEFAULT);
     DEBUGF("can_sock_drv_init");
     dthread_lib_init();
 
@@ -186,7 +188,7 @@ static int can_sock_drv_init(void)
     INIT_ATOM(can_frame);
     INIT_ATOM(data);
 
-    dlib_set_debug(DLOG_DEFAULT);
+    dlog_set_debug(DLOG_DEFAULT);
     return 0;
 }
 
