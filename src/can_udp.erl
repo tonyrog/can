@@ -305,7 +305,12 @@ code_change(_OldVsn, State, _Extra) ->
 %%--------------------------------------------------------------------
 
 reuse_port() ->
-    [{raw,?SOL_SOCKET,?SO_REUSEPORT,<<1:32/native>>}].
+    case os:type() of
+	{unix,Type} when Type =:= darwin; Type =:= freebsd ->
+	    [{raw,?SOL_SOCKET,?SO_REUSEPORT,<<1:32/native>>}];
+	_ ->
+	    []
+    end.
 
 send_message(Mesg, S) when is_record(Mesg,can_frame) ->
     ?debug([{tag, frame}],"can_udp:send_message: [~s]", 
