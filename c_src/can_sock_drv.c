@@ -54,8 +54,8 @@
 #define CTL_UINT32 2
 #define CTL_STRING 3
 
-#include "dthread.h"
-#include "dlog.h"
+#include "dthread/include/dthread.h"
+#include "dthread/include/dlog.h"
 
 typedef struct _drv_ctx_t
 {
