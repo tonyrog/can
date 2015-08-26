@@ -31,13 +31,15 @@
 -define(CAN_SFF_INVALID,  16#7f0).
 -define(CAN_EFF_INVALID,  16#1fc00000).
 
+-define(CAN_NO_TIMESTAMP, -1).
+
 -record(can_frame,
 	{
 	  id,          %% integer 11 | 29 bit (ide=true) + EXT_BIT|RTR_BIT
 	  len=0,       %% length of data 0..8
 	  data=(<<>>), %% binary with data bytes
 	  intf=0,      %% Input interface number
-	  ts=-1        %% interface timestamp if present (millisenconds)
+	  ts=?CAN_NO_TIMESTAMP %% timestamp in (millisenconds)
 	}).
 
 %%

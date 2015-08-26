@@ -27,7 +27,9 @@
 -export([send/2, send_ext/2]).
 -export([send/1, send_from/2]).
 -export([create/2, create/3, create/4, create/6, create/7]).
+-export([icreate/5]).
 -export([send/5, send_from/4, send_from/6]).
+
 
 start() ->
     application:start(uart),
@@ -40,30 +42,27 @@ create(ID,Data) ->
     create(ID,0,Data).
 
 create(ID,Intf,Data) ->
-    create(ID,erlang:iolist_size(Data),true,false,Intf,Data,-1).
+    Ext = if ID > ?CAN_SFF_MASK -> true; true -> false end,
+    create(ID,erlang:iolist_size(Data),Ext,false,Intf,Data,?CAN_NO_TIMESTAMP).
 
-create(ID,Len,Intf,Data) when ID > ?CAN_SFF_MASK ->
-    create(ID,Len,true,false,Intf,Data,-1);
 create(ID,Len,Intf,Data) ->
-    create(ID,Len,false,false,Intf,Data,-1).
+    Ext = if ID > ?CAN_SFF_MASK -> true; true -> false end,
+    create(ID,Len,Ext,false,Intf,Data,?CAN_NO_TIMESTAMP).
 
 create(ID,Len,Ext,Rtr,Intf,Data) ->
-    create(ID,Len,Ext,Rtr,Intf,Data,-1).
+    create(ID,Len,Ext,Rtr,Intf,Data,?CAN_NO_TIMESTAMP).
 
-create(ID,Len,false,false,Intf,Data,Ts) ->
-    create_(ID,Len,Intf,Data,Ts);
-create(ID,Len,true,false,Intf,Data,Ts) ->
-    create_(ID bor ?CAN_EFF_FLAG,Len,Intf,Data,Ts);
-create(ID,Len,false,true,Intf,Data,Ts) ->
-    create_(ID bor ?CAN_RTR_FLAG,Len,Intf,Data,Ts);
-create(ID,Len,true,true,Intf,Data,Ts) ->
-    create_(ID bor (?CAN_EFF_FLAG bor ?CAN_RTR_FLAG),Len,Intf,Data,Ts).
+create(ID0,Len,Ext,Rtr,Intf,Data,Ts) ->
+    ID1 = if Ext -> ID0 bor ?CAN_EFF_FLAG;
+	     true -> ID0
+	  end,
+    ID = if Rtr -> ID1 bor ?CAN_RTR_FLAG;
+	    true -> ID1
+	 end,
+    icreate(ID,Len,Intf,Data,Ts).
 
-create_(ID,Len,Intf,Data,Ts) ->
-    Data1 = if is_binary(Data) -> Data;
-	      is_list(Data) -> list_to_binary(Data);
-	      true -> erlang:error(?can_error_data)
-	    end,
+icreate(ID,Len,Intf,Data,Ts) ->
+    Data1 = iolist_to_binary(Data),
     L = size(Data1),
     if ?is_can_id_eff(ID), not ?is_can_id_eff_valid(ID) ->
 	    erlang:error(?can_error_id_out_of_range);
@@ -85,24 +84,24 @@ create_(ID,Len,Intf,Data,Ts) ->
 
 %% Simple SEND
 send(ID,Data) ->
-    Len = byte_size(Data),
-    send(create(ID,Len,false,false,0,Data,0)).
+    Len = erlang:iolist_size(Data),
+    send(create(ID,Len,false,false,0,Data,?CAN_NO_TIMESTAMP)).
 
 %% Simple SEND extended frame ID format
 send_ext(ID,Data) ->
-    Len = byte_size(Data),
-    send(create(ID,Len,true,false,0,Data,0)).
+    Len = erlang:iolist_size(Data),
+    send(create(ID,Len,true,false,0,Data,?CAN_NO_TIMESTAMP)).
 
 %% More general
-send(ID,Len,Ext,Rtr,Data) -> 
-    send(create(ID,Len,Ext,Rtr,0,Data,0)).
+send(ID,Len,Ext,Rtr,Data) ->
+    send(create(ID,Len,Ext,Rtr,0,Data,?CAN_NO_TIMESTAMP)).
 
 %% Send with application Pid
 send_from(Pid,ID,Len,Data) ->
-    send_from(Pid,create(ID,Len,Data)).
+    send_from(Pid,create(ID,0,Len,Data)).
 
-send_from(Pid,ID,Len,Ext,Rtr,Data) -> 
-    send_from(Pid,create(ID,Len,Ext,Rtr,0,Data,0)).
+send_from(Pid,ID,Len,Ext,Rtr,Data) ->
+    send_from(Pid,create(ID,Len,Ext,Rtr,0,Data,?CAN_NO_TIMESTAMP)).
 
 
 %% Send a homebrew can_frame

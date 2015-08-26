@@ -85,11 +85,11 @@
 start() ->
     start(0, []).
 
--spec start(BudId::integer()) -> {ok,pid()} | {error,Reason::term()}.
+-spec start(BusId::integer()) -> {ok,pid()} | {error,Reason::term()}.
 start(BusId) when is_integer(BusId)->
     start(BusId, []).
 
--spec start(BudId::integer(),Opts::[can_udp_option()]) ->
+-spec start(BusId::integer(),Opts::[can_udp_option()]) ->
 		   {ok,pid()} | {error,Reason::term()}.
 
 start(BusId, Opts) when is_integer(BusId), is_list(Opts) ->
@@ -102,11 +102,11 @@ start(BusId, Opts) when is_integer(BusId), is_list(Opts) ->
 start_link() ->
     start_link(0, []).
 
--spec start_link(BudId::integer()) -> {ok,pid()} | {error,Reason::term()}.
+-spec start_link(BusId::integer()) -> {ok,pid()} | {error,Reason::term()}.
 start_link(BusId) when is_integer(BusId) ->
     start_link(BusId, []).
 
--spec start_link(BudId::integer(),Opts::[can_udp_option()]) ->
+-spec start_link(BusId::integer(),Opts::[can_udp_option()]) ->
 		   {ok,pid()} | {error,Reason::term()}.    
 start_link(BusId,Opts) ->
     ?debug("can_udp: start_link ~p ~p\n", [BusId,Opts]),
@@ -156,8 +156,7 @@ init([BusId, Opts]) ->
 		     ?warning("No such interface ~p",[LAddr0]),
 		    {0,0,0,0}
 	    end,
-    RAddr = LAddr, %% ?CAN_MULTICAST_IF,
-
+    RAddr = ?CAN_MULTICAST_IF,
 
     SendOpts = [{active,false},{multicast_if,LAddr},
 		{multicast_ttl,Mttl},{multicast_loop,true}],
@@ -275,8 +274,9 @@ handle_info({udp,U,_Addr,Port,Data}, S) when S#s.in == U ->
  		<<CId:32/little,FLen:32/little,CData:8/binary>> ->
 		    ?debug("CUd=~8.16.0B, FLen=~8.16.0B, CData=~p\n",
 			 [CId,FLen,CData]),
-		    Ts = -1,  %% add this option!
-		    case catch can:create(CId,FLen band 16#f,S#s.id,CData,Ts) of
+		    Ts = ?CAN_NO_TIMESTAMP,
+		    Len = FLen band 16#f,
+		    case catch can:icreate(CId,Len,S#s.id,CData,Ts) of
 			{'EXIT', {Reason,_}} when is_atom(Reason) ->
 			    {noreply, ierr(Reason,S)};
 			{'EXIT', Reason} when is_atom(Reason) ->
