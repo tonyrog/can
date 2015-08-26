@@ -137,12 +137,28 @@ stop(BusId) ->
 %% Description: Initiates the server
 %%--------------------------------------------------------------------
 init([BusId, Opts]) ->
-    MAddr = proplists:get_value(maddr, Opts, ?CAN_MULTICAST_ADDR),
-    Mttl  = proplists:get_value(ttl, Opts, 1),
-    LAddr = proplists:get_value(ifaddr, Opts, ?CAN_MULTICAST_IF),
-    RAddr = ?CAN_MULTICAST_IF,
+    MAddr  = proplists:get_value(maddr, Opts, ?CAN_MULTICAST_ADDR),
+    Mttl   = proplists:get_value(ttl, Opts, 1),
+    LAddr0 = proplists:get_value(ifaddr, Opts, ?CAN_MULTICAST_IF),
     MPort = ?CAN_UDP_PORT+BusId,
-    
+    LAddr = if is_tuple(LAddr0) -> 
+		    LAddr0;
+	       is_list(LAddr0) ->
+		     case lookup_ip(LAddr0, inet) of
+			 {error,_} ->
+			     ?warning("No such interface ~p",[LAddr0]),
+			     {0,0,0,0};
+			 {ok,IP} -> IP
+		     end;
+		LAddr0 =:= any -> 
+		    {0,0,0,0};
+		true ->
+		     ?warning("No such interface ~p",[LAddr0]),
+		    {0,0,0,0}
+	    end,
+    RAddr = LAddr, %% ?CAN_MULTICAST_IF,
+
+
     SendOpts = [{active,false},{multicast_if,LAddr},
 		{multicast_ttl,Mttl},{multicast_loop,true}],
 
@@ -311,6 +327,32 @@ reuse_port() ->
 	_ ->
 	    []
     end.
+
+lookup_ip(Name,Family) ->
+    case inet_parse:address(Name) of
+	{error,_} ->
+	    lookup_ifaddr(Name,Family);
+	Res -> Res
+    end.
+
+lookup_ifaddr(Name,Family) ->
+    case inet:getifaddrs() of
+	{ok,List} ->
+	    case lists:keyfind(Name, 1, List) of
+		false -> {error, enoent};
+		{_, Flags} ->
+		    AddrList = proplists:get_all_values(addr, Flags),
+		    get_family_addr(AddrList, Family)
+	    end;
+	_ ->
+	    {error, enoent}
+    end.
+	
+get_family_addr([IP|_IPs], inet) when tuple_size(IP) =:= 4 -> {ok,IP};
+get_family_addr([IP|_IPs], inet6) when tuple_size(IP) =:= 8 -> {ok,IP};
+get_family_addr([_|IPs],Family) -> get_family_addr(IPs,Family);
+get_family_addr([],_Family) -> {error, enoent}.
+
 
 send_message(Mesg, S) when is_record(Mesg,can_frame) ->
     ?debug([{tag, frame}],"can_udp:send_message: [~s]", 

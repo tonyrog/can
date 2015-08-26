@@ -295,19 +295,7 @@ init(_Args) ->
 %%--------------------------------------------------------------------
 handle_call({send,Pid,Frame},_From, S)
   when is_pid(Pid),is_record(Frame, can_frame) ->
-    I = Frame#can_frame.intf,
-    S1 =
-	if I =:= 0; I =:= undefined ->
-		broadcast(Pid,Frame,S);
-	   true -> %% single cast must match the interface number
-		case lists:keyfind(I, #can_if.id, S#s.ifs) of
-		    false ->
-			S;
-		    IF ->
-			gen_server:cast(IF#can_if.pid, {send, Frame}),
-			S#s { stat_out = S#s.stat_out + 1 }
-		end
-	end,
+    S1 = do_send(Pid, Frame, S),
     {reply, ok, S1}; 
 
 handle_call({attach,Pid}, _From, S) when is_pid(Pid) ->
@@ -438,7 +426,7 @@ handle_cast({input,Pid,Frame}, S)
     end;
 handle_cast({send,Pid,Frame}, S) 
   when is_pid(Pid),is_record(Frame, can_frame) ->
-    S1 = broadcast(Pid, Frame, S),
+    S1 = do_send(Pid, Frame, S),
     {noreply, S1};
 handle_cast(_Msg, S) ->
     {noreply, S}.
@@ -503,6 +491,20 @@ code_change(_OldVsn, S, _Extra) ->
 %%--------------------------------------------------------------------
 %%% Internal functions
 %%--------------------------------------------------------------------
+
+do_send(Pid, Frame, S) ->
+    case Frame#can_frame.intf of
+	0 -> broadcast(Pid,Frame,S);
+	undefined -> broadcast(Pid,Frame,S);
+	I ->
+	    case lists:keyfind(I, #can_if.id, S#s.ifs) of
+		false ->
+		    S;
+		IF ->
+		    gen_server:cast(IF#can_if.pid, {send, Frame}),
+		    S#s { stat_out = S#s.stat_out + 1 }
+	    end
+    end.
 
 add_if(Pid,Param,S) ->
     Mon = erlang:monitor(process, Pid),
