@@ -54,10 +54,7 @@
 %% @end
 %%--------------------------------------------------------------------
 start(_StartType, _StartArgs) ->
-    Args = case application:get_env(can, arguments) of
-	       undefined -> [];
-	       {ok,As} -> As
-	   end,
+    Args = application:get_all_env(can),
     can_sup:start_link(Args).
 
 %% @private

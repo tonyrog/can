@@ -48,8 +48,7 @@
 	  ifaddr,      %% interface address (any, {192,168,1,4} ...)
 	  mport,       %% port number used
 	  oport,       %% output port number used
-	  stat,        %% counter dictionary
-	  fs           %% can_router:fs_new()
+	  fs           %% can_filter:new()
 	 }).
 
 
@@ -173,10 +172,9 @@ init([BusId, Opts]) ->
 		    case can_router:join({?MODULE,MAddr,BusId}) of
 			{ok,ID} ->
 			    {ok,#s{ in=In, mport=MPort,
-				    stat = dict:new(),
 				    out=Out, oport=OutPort,
 				    maddr=MAddr, id=ID,
-				    fs=can_router:fs_new()
+				    fs=can_filter:new()
 				  }};
 			Error ->
 			    {stop, Error}
@@ -204,19 +202,22 @@ handle_call({send,Mesg}, _From, S) ->
     {reply, Reply, S1};
 
 handle_call(statistics,_From,S) ->
-    Stat = dict:to_list(S#s.stat),
-    {reply,{ok,Stat}, S};
+    {reply,{ok,can_counter:list()}, S};
 handle_call({add_filter,F}, _From, S) ->
-    {I,Fs} = can_router:fs_add(F,S#s.fs),
+    {I,Fs} = can_filter:add(F,S#s.fs),
     {reply, {ok,I}, S#s { fs=Fs }};
+handle_call({set_filter,I,F}, _From, S) ->
+    Fs = can_filter:set(I,F,S#s.fs),
+    S1 = S#s { fs=Fs },
+    {reply, ok, S1};
 handle_call({del_filter,I}, _From, S) ->
-    {Reply,Fs} = can_router:fs_del(I,S#s.fs),
+    {Reply,Fs} = can_filter:del(I,S#s.fs),
     {reply, Reply, S#s { fs=Fs }};
 handle_call({get_filter,I}, _From, S) ->
-    Reply = can_router:fs_get(I,S#s.fs),
+    Reply = can_filter:get(I,S#s.fs),
     {reply, Reply, S};  
 handle_call(list_filter, _From, S) ->
-    Reply = can_router:fs_list(S#s.fs),
+    Reply = can_filter:list(S#s.fs),
     {reply, Reply, S};
 handle_call(stop, _From, S) ->
     {stop, normal, ok, S};
@@ -234,23 +235,22 @@ handle_cast({send,Mesg}, S) ->
     {noreply, S1};
 
 handle_cast({statistics,From},S) ->
-    Stat = dict:to_list(S#s.stat),
-    gen_server:reply(From, {ok,Stat}),
+    gen_server:reply(From, {ok,can_counter:list()}),
     {noreply, S};
 handle_cast({add_filter,From,F}, S) ->
-    {I,Fs} = can_router:fs_add(F,S#s.fs),
+    {I,Fs} = can_filter:add(F,S#s.fs),
     gen_server:reply(From, {ok,I}),
     {noreply, S#s { fs=Fs }};
 handle_cast({del_filter,From,I}, S) ->
-    {Reply,Fs} = can_router:fs_del(I,S#s.fs),
+    {Reply,Fs} = can_filter:del(I,S#s.fs),
     gen_server:reply(From, Reply),
     {noreply, S#s { fs=Fs }};
 handle_cast({get_filter,From,I}, S) ->
-    Reply = can_router:fs_get(I,S#s.fs),
+    Reply = can_filter:get(I,S#s.fs),
     gen_server:reply(From, Reply),
     {noreply, S};  
 handle_cast({list_filter,From}, S) ->
-    Reply = can_router:fs_list(S#s.fs),
+    Reply = can_filter:list(S#s.fs),
     gen_server:reply(From, Reply),
     {noreply, S};
 handle_cast(_Mesg, S) ->
@@ -398,9 +398,9 @@ send_message(ID, Len, Data, S) ->
 	    output_error(?can_error_transmission,S)
     end.
 
-count(Item,S) ->
-    Stat = dict:update_counter(Item, 1, S#s.stat),
-    S#s { stat = Stat }.
+count(Counter,S) ->
+    can_counter:update(Counter, 1),
+    S.
 
 output_error(Reason,S) ->
     {{error,Reason}, oerr(Reason,S)}.
@@ -414,7 +414,7 @@ ierr(Reason,S) ->
     count({input_error,Reason}, S1).
 
 input(Frame, S) ->
-    case can_router:fs_input(Frame, S#s.fs) of
+    case can_filter:input(Frame, S#s.fs) of
 	true ->
 	    can_router:input(Frame),
 	    count(input_frames, S);

@@ -57,6 +57,30 @@ be initialized in the environment like:
                             {bitrate, 250000}]},
               {can_sock, "can0", []},
               {can_sock, "vcan0", []}]}]}
+
+There is a special "wakeup" frame that can be enabled by setting wakeup
+to true. This together with wakeup_timeout will make sure that the
+can bus gets a "dummy" frame sent before the real message when neccesary.
+
+If wakeup_timeout milliseconds (15s) has passed since the interface
+saw some input frames or no frames where sent from that interface, then
+the wakeup frame is sent.
+
+    {can, [{wakeup, true},
+           {wakeup_timeout, 15000},
+	   {interfaces,[
+	      {can_usb, 1, [{device, "/dev/tty.usbserial-LWQ8CA1K"},
+                            {bitrate, 250000}]}
+	      {can_usb, 2, [{device, "/dev/tty.usbserial-LWQ6UYOM"},
+                            {bitrate, 250000}]}
+	    ]}]}.
+
+The wakeup frame looks like this ( maybe configure per interface ? ):
+
+    <<16#80,16#2802:16/little,0:8,1:32/little>>
+
+And is sent to the PDO_TX1 for the current target node.
+
 	   
 The interfaces in the environment will get under supervision.
 		     

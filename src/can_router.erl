@@ -40,11 +40,6 @@
 -export([statistics/0]).
 -export([debug/2, interfaces/0, interface/1, interface_pid/1]).
 
-
-%% Backend interface
--export([fs_new/0, fs_add/2, fs_add/3, fs_del/2, fs_get/2, fs_list/1]).
--export([fs_input/2]).
-
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
 	 terminate/2, code_change/3]).
@@ -56,19 +51,14 @@
 
 -define(SERVER, can_router).
 
-%% Filter structure (also used by backends)
--record(can_fs,
-	{
-	  next_id = 1,
-	  filter = []  %% [{I,#can_filter{}}]
-	}).
 
 -record(can_if,
 	{
 	  pid,      %% can interface pid
 	  id,       %% interface id
 	  mon,      %% can app monitor
-	  param     %% match param normally {Mod,Name,Index} 
+	  param,    %% match param normally {Mod,Name,Index} 
+	  atime     %% last input activity time
 	}).
 
 -record(can_app,
@@ -82,11 +72,13 @@
 	{
 	  if_count = 1,  %% interface id counter
 	  apps = [],     %% attached can applications
-	  ifs  = [],     %% joined interfaces
-	  stat_in=0,     %% number of input packets received
-	  stat_err=0,    %% number of error packets received
-	  stat_out=0     %% number of output packets  sent
+	  wakeup_timeout :: timeout(),
+	  wakeup = false :: boolean()
 	}).
+
+-define(CLOCK_TIME, 16#ffffffff).
+-define(DEFAULT_WAKEUP_TIMEOUT, 15000).
+-define(MSG_WAKEUP,            16#2802).
 
 %%====================================================================
 %% API
@@ -279,10 +271,19 @@ stop() ->
 %%                         {stop, Reason}
 %% Description: Initiates the server
 %%--------------------------------------------------------------------
-init(_Args) ->
+init(Args) ->
     lager:start(),  %% ok testing, remain or go?
     process_flag(trap_exit, true),
-    {ok, #s{}}.
+    start_clock(),
+    Wakeup = proplists:get_value(wakeup, Args, false),
+    Wakeup_timeout = proplists:get_value(wakeup_timeout, Args, 
+					 ?DEFAULT_WAKEUP_TIMEOUT),
+    can_counter:init(stat_in),   %% number of input packets received
+    can_counter:init(stat_out),  %% number of output packets  sent
+    can_counter:init(stat_err),  %% number of error packets received
+    {ok, #s{ wakeup = Wakeup,
+	     wakeup_timeout = Wakeup_timeout
+	   }}.
 
 %%--------------------------------------------------------------------
 %% Function: %% handle_call(Request, From, State) -> {reply, Reply, State} |
@@ -326,78 +327,79 @@ handle_call({detach,Pid}, _From, S) when is_pid(Pid) ->
 	    {reply,ok,S#s { apps = Apps -- [App] }}
     end;
 handle_call({join,Pid,Param}, _From, S) ->
-    case lists:keytake(Param, #can_if.param, S#s.ifs) of
+    case get_interface_by_param(Param) of
 	false ->
 	    ?debug("can_router: process ~p, param ~p joined.",  [Pid, Param]),
 	    {ID,S1} = add_if(Pid,Param,S),
 	    {reply, {ok,ID}, S1};
-	{value,I,IFs} ->
+	If ->
 	    receive
-		{'EXIT', OldPid, _Reason} when I#can_if.pid =:= OldPid ->
+		{'EXIT', OldPid, _Reason} when If#can_if.pid =:= OldPid ->
 		    ?debug("join: restart detected\n", []),
-		    {ID,S1} = add_if(Pid,Param,S#s { ifs=IFs} ),
+		    {ID,S1} = add_if(Pid,Param,S),
 		    {reply, {ok,ID}, S1}
 	    after 0 ->
 		    {reply, {error,ealready}, S}
 	    end
     end;
 handle_call({interface,I}, _From, S) when is_integer(I) ->
-    case lists:keysearch(I, #can_if.id, S#s.ifs) of
+    case get_interface_by_id(I) of
 	false ->
 	    {reply, {error,enoent}, S};
-	{value,If} ->
+	If ->
 	    {reply, {ok,If}, S}
     end;
 handle_call({interface,Param}, _From, S) ->
-    case lists:keysearch(Param, #can_if.param, S#s.ifs) of
+    case get_interface_by_param(Param) of
 	false ->
 	    {reply, {error,enoent}, S};
-	{value,If} ->
+	If ->
 	    {reply, {ok,If}, S}
     end;
 handle_call(interfaces, _From, S) ->
-    {reply, S#s.ifs, S};
+    {reply, get_interface_list(), S};
+
 handle_call(applications, _From, S) ->
     {reply, S#s.apps, S};
 handle_call({add_filter,Intf,Invert,ID,Mask}, From, S) when 
       is_integer(Intf), is_boolean(Invert), is_integer(ID), is_integer(Mask) ->
-    case lists:keysearch(Intf, #can_if.id, S#s.ifs) of
+    case get_interface_by_id(Intf) of
 	false ->
 	    {reply, {error, enoent}, S};
-	{value,If} ->
+	If ->
 	    ID1 = if Invert ->
 			  ID bor ?CAN_INV_FILTER;
 		     true -> 
 			  ID
 		  end,
-	    F = #can_filter { id=ID1, mask=Mask},
+	    F = #can_filter { id=ID1, mask=Mask },
 	    gen_server:cast(If#can_if.pid, {add_filter,From,F}),
 	    {noreply, S}
     end;
 
 handle_call({del_filter,Intf,I}, From, S) ->
-    case lists:keysearch(Intf, #can_if.id, S#s.ifs) of
+    case get_interface_by_id(Intf) of
 	false ->
 	    {reply, {error, enoent}, S};
-	{value,If} ->
+	If ->
 	    gen_server:cast(If#can_if.pid, {del_filter,From,I}),
 	    {noreply, S}
     end;
 
 handle_call({get_filter,Intf,I}, From, S) ->
-    case lists:keysearch(Intf, #can_if.id, S#s.ifs) of
+    case get_interface_by_id(Intf) of
 	false ->
 	    {reply, {error, enoent}, S};
-	{value,If} ->
+	If ->
 	    gen_server:cast(If#can_if.pid, {get_filter,From,I}),
 	    {noreply, S}
     end;
 
 handle_call({list_filter,Intf}, From, S) ->
-    case lists:keysearch(Intf, #can_if.id, S#s.ifs) of
+    case get_interface_by_id(Intf) of
 	false ->
 	    {reply, {error, enoent}, S};
-	{value,If} ->
+	If ->
 	    gen_server:cast(If#can_if.pid, {list_filter,From}),
 	    {noreply,S}
     end;
@@ -416,11 +418,16 @@ handle_call(_Request, _From, S) ->
 %%--------------------------------------------------------------------
 handle_cast({input,Pid,Frame}, S) 
   when is_pid(Pid),is_record(Frame, can_frame) ->
-    if ?is_can_frame_err(Frame) ->
-	    S1 = error(Pid, Frame, S),
+    if ?is_can_frame_err(Frame) ->  %% FIXME: send to error handler
+	    S1 = count(stat_err, S),
 	    {noreply, S1};
        true ->
-	    S1 = S#s { stat_in = S#s.stat_in + 1 },
+	    S1 = count(stat_in, S),
+	    I = Frame#can_frame.intf,
+	    case get_interface_by_id(I) of
+		false -> ok;
+		If -> set_interface(If#can_if { atime = read_clock() })
+	    end,
 	    S2 = broadcast(Pid, Frame, S1),
 	    {noreply, S2}
     end;
@@ -440,14 +447,14 @@ handle_cast(_Msg, S) ->
 handle_info({'DOWN',_Ref,process,Pid,_Reason},S) ->
     case lists:keytake(Pid, #can_app.pid, S#s.apps) of
 	false ->
-	    case lists:keytake(Pid, #can_if.pid, S#s.ifs) of
+	    case get_interface_by_pid(Pid) of
 		false ->
 		    {noreply, S};
-		{value,_If,Ifs} ->
+		If ->
 		    ?debug("can_router: interface ~p died, reason ~p\n", 
-			   [_If, _Reason]),
-		    %% Restart done by can_if_sup
-		    {noreply,S#s { ifs = Ifs }}
+			   [If, _Reason]),
+		    erase_interface(If#can_if.id),
+		    {noreply,S}
 	    end;
 	{value,_App,Apps} ->
 	    ?debug("can_router: application ~p died, reason ~p\n", 
@@ -456,17 +463,18 @@ handle_info({'DOWN',_Ref,process,Pid,_Reason},S) ->
 	    {noreply,S#s { apps = Apps }}
     end;
 handle_info({'EXIT', Pid, Reason}, S) ->
-    case lists:keytake(Pid, #can_if.pid, S#s.ifs) of
-	{value,_If,Ifs} ->
-	    %% One of our interfaces died, log and ignore
-	    ?debug("can_router: interface ~p died, reason ~p\n", 
-		   [_If, Reason]),
-	    {noreply,S#s { ifs = Ifs }};
+    case get_interface_by_pid(Pid) of
 	false ->
 	    %% Someone else died, log and terminate
 	    ?debug("can_router: linked process ~p died, reason ~p, terminating\n", 
 		   [Pid, Reason]),
-	    {stop, Reason, S}
+	    {stop, Reason, S};
+	If ->
+	    %% One of our interfaces died, log and ignore
+	    ?debug("can_router: interface ~p died, reason ~p\n", 
+		   [If, Reason]),
+	    erase_interface(If#can_if.id),
+	    {noreply,S}
     end;
 handle_info(_Info, S) ->
     {noreply, S}.
@@ -492,108 +500,107 @@ code_change(_OldVsn, S, _Extra) ->
 %%% Internal functions
 %%--------------------------------------------------------------------
 
+count(Counter, S) ->
+    can_counter:update(Counter, 1),
+    S.
+
+start_clock() ->
+    Clock = erlang:start_timer(16#ffffffff, undefined, undefined),
+    put(clock, Clock),
+    Clock.
+
+read_clock() ->
+    Clock = get(clock),
+    case erlang:read_timer(Clock) of
+	false ->
+	    Clock1 = start_clock(),
+	    erlang:read_timer(Clock1);
+	Time ->
+	    Time
+    end.
+
 do_send(Pid, Frame, S) ->
     case Frame#can_frame.intf of
-	0 -> broadcast(Pid,Frame,S);
-	undefined -> broadcast(Pid,Frame,S);
+	0 ->
+	    broadcast(Pid,Frame,S);
+	undefined ->
+	    broadcast(Pid,Frame,S);
 	I ->
-	    case lists:keyfind(I, #can_if.id, S#s.ifs) of
-		false ->
+	    case get_interface_by_id(I) of
+		false -> 
 		    S;
-		IF ->
-		    gen_server:cast(IF#can_if.pid, {send, Frame}),
-		    S#s { stat_out = S#s.stat_out + 1 }
+		If ->
+		    send_if(If,Frame,S),
+		    S
 	    end
     end.
 
 add_if(Pid,Param,S) ->
     Mon = erlang:monitor(process, Pid),
     ID = S#s.if_count,
-    If = #can_if { pid=Pid, id=ID, mon=Mon, param=Param },
-    Ifs1 = [If | S#s.ifs ],
-    S1 = S#s { if_count = ID+1, ifs = Ifs1 },
+    If = #can_if { pid=Pid, id=ID, mon=Mon, param=Param, atime = read_clock() },
+    set_interface(If),
+    S1 = S#s { if_count = ID+1 },
     link(Pid),
     {ID, S1}.
 
-%% fs_xxx functions are normally called from backends
-%% if filter returns true then pass the message through
-%% (a bit strange, but follows the logic from lists:filter/2)
-%%
+%% ugly but less admin for now
+set_interface(If) ->
+    put({interface,If#can_if.id}, If).
 
-%% create filter structure
-fs_new() ->
-    #can_fs {}.
+erase_interface(I) ->
+    erase({interface,I}).
 
-%% add filter to filter structure
-fs_add(F, Fs) when is_record(F, can_filter), is_record(Fs, can_fs) ->
-    I = Fs#can_fs.next_id,
-    Filter = Fs#can_fs.filter ++ [{I,F}],
-    {I, Fs#can_fs { filter=Filter, next_id=I+1 }}.
-
-fs_add(I,F,Fs) when is_integer(I), is_record(F,can_filter),
-		    is_record(Fs,can_fs) ->
-    Filter = [{I,F} | Fs#can_fs.filter],
-    NextId = Fs#can_fs.next_id,
-    Fs#can_fs { filter=Filter, next_id=erlang:max(I+1,NextId)}.
-
-%% remove filter from filter structure
-fs_del(F, Fs) when is_record(F, can_filter), is_record(Fs, can_fs) ->
-    case lists:keytake(F, 2, Fs#can_fs.filter) of
-	{value,_FI,Filter} ->
-	    {true, Fs#can_fs { filter=Filter }};
-	false ->
-	    {false, Fs}
-    end;
-fs_del(I, Fs) when is_record(Fs, can_fs) ->
-    case lists:keytake(I, 1, Fs#can_fs.filter) of
-	{value,_FI,Filter} ->
-	    {true, Fs#can_fs { filter=Filter }};
-	false ->
-	    {false, Fs}
+get_interface_by_id(I) ->
+    case get({interface,I}) of
+	undefined -> false;
+	If -> If
     end.
+	     
+get_interface_by_param(Param) ->
+    lists:keyfind(Param, #can_if.param, get_interface_list()).
 
-fs_get(I, Fs) when is_record(Fs, can_fs) ->
-    case lists:keysearch(I, 1, Fs#can_fs.filter) of
-	{value,FI} ->
-	    {ok,FI};
-	false ->
-	    {error, enoent}
-    end.
+get_interface_by_pid(Pid) ->
+    lists:keyfind(Pid, #can_if.pid, get_interface_list()).
 
-%% return the filter list [{Num,#can_filter{}}]
-fs_list(Fs) when is_record(Fs, can_fs) ->
-    {ok, Fs#can_fs.filter}.
+get_interface_list() ->
+    [get({interface,I}) || {interface,I} <- erlang:get_keys()].
 
-    
-%% filter a frame
-%% return true for no filtering (pass through)
-%% return false for filtering
-%%
-fs_input(F, Fs) when is_record(F, can_frame), is_record(Fs, can_fs) ->
-    case Fs#can_fs.filter of
-	[] -> true;  %% default to accept all
-	Filter -> filter_(F,Filter)
-    end.
+send_if(If, Frame, S) ->
+    Time = read_clock(),  %% time is decrementing to zero
+    ActivityTime = If#can_if.atime - Time,
+    S1 = if S#s.wakeup, ActivityTime >= S#s.wakeup_timeout ->
+		 send_wakeup_if(If, Frame#can_frame.id, S);
+	    true ->
+		 S
+	 end,
+    S2 = count(stat_out, S1),
+    gen_server:cast(If#can_if.pid, {send, Frame}),
+    set_interface(If#can_if { atime = read_clock() }),
+    S2.
 
-filter_(Frame, [{_I,F}|Fs]) ->
-    Mask = F#can_filter.mask,
-    Cond = (Frame#can_frame.id band Mask) =:= (F#can_filter.id band Mask),
-    if ?is_not_can_id_inv_filter(F#can_filter.id), Cond ->
-	    true;
-       ?is_can_id_inv_filter(F#can_filter.id), not Cond ->
-	    true;
+-define(PDO1_TX,  2#0011).
+
+-define(NODE_ID_MASK,  16#7f).
+-define(CAN_ID(Func,Nid), (((Func) bsl 7) bor ((Nid) band ?NODE_ID_MASK))).
+
+-define(XNODE_ID_MASK, 16#01FFFFFF).
+-define(XCAN_ID(Func,Nid), (((Func) bsl 25) bor ((Nid) band ?XNODE_ID_MASK))).
+
+can_id(Nid, Func) ->
+    if Nid band ?CAN_EFF_FLAG =:= 0 ->
+	    {false,?CAN_ID(Func, Nid)};
        true ->
-	    filter_(Frame, Fs)
-    end;
-filter_(_Frame, []) ->
-    false.
+	    {true,?XCAN_ID(Func, Nid)}
+    end.
 
-%% Error frame handling
-error(_Sender, _Frame, S) ->
-    ?debug("can_router: error frame = ~p\n", [_Frame]),
-    %% FIXME: send to error handler
-    S1 = S#s { stat_err = S#s.stat_err + 1 },
-    S1.
+send_wakeup_if(If, Nid, S) ->
+    {Ext,ID} = can_id(Nid, ?PDO1_TX),
+    Frame = can:create(ID,8,Ext,false,If#can_if.id,
+		       <<16#80,?MSG_WAKEUP:16/little,0:8,1:32/little>>),
+    gen_server:cast(If#can_if.pid, {send, Frame}),
+    count(stat_out, S).
+
 
 %% Broadcast a message to applications/simulated can buses
 %% and joined CAN interfaces
@@ -601,31 +608,23 @@ error(_Sender, _Frame, S) ->
 broadcast(Sender,Frame,S) ->
     lager:debug([{tag, frame}],"can_router: broadcast: [~s]", 
 		[can_probe:format_frame(Frame)]),
-    Sent0 = broadcast_apps(Sender, Frame, S#s.apps, 0),
-    Sent  = broadcast_ifs(Frame, S#s.ifs, Sent0),
-    ?debug("broadcast: frame=~p, send=~w\n", [Frame, Sent]),
-    if Sent > 0 ->
-	    S#s { stat_out = S#s.stat_out + 1 };
-       true ->
-	    S
-    end.
-
+    S1 = broadcast_apps(Sender, Frame, S#s.apps, S),
+    broadcast_ifs(Frame, get_interface_list(), S1).
 
 %% send to all applications, except sender application
-broadcast_apps(Sender, Frame, [A|As], Sent) when A#can_app.pid =/= Sender ->
+broadcast_apps(Sender, Frame, [A|As], S) when A#can_app.pid =/= Sender ->
     A#can_app.pid ! Frame,
-    broadcast_apps(Sender, Frame, As, Sent+1);
-broadcast_apps(Sender, Frame, [_|As], Sent) ->
-    broadcast_apps(Sender, Frame, As, Sent);
-broadcast_apps(_Sender, _Frame, [], Sent) ->
-    Sent.
+    broadcast_apps(Sender, Frame, As, S);
+broadcast_apps(Sender, Frame, [_|As], S) ->
+    broadcast_apps(Sender, Frame, As, S);
+broadcast_apps(_Sender, _Frame, [], S) ->
+    S.
 
 %% send to all interfaces, except the origin interface
-broadcast_ifs(Frame, [I|Is], Sent) when I#can_if.id =/= Frame#can_frame.intf ->
-    gen_server:cast(I#can_if.pid, {send, Frame}),
-    broadcast_ifs(Frame, Is, Sent+1);
-broadcast_ifs(Frame, [_|Is], Sent) ->
-    broadcast_ifs(Frame, Is, Sent);
-broadcast_ifs(_Frame, [], Sent) ->
-    Sent.
-    
+broadcast_ifs(Frame, [If|Is], S) when If#can_if.id =/= Frame#can_frame.intf ->
+    S1 = send_if(If, Frame, S),
+    broadcast_ifs(Frame, Is, S1);
+broadcast_ifs(Frame, [_|Is], S) ->
+    broadcast_ifs(Frame, Is, S);
+broadcast_ifs(_Frame, [], S) ->
+    S.

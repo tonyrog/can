@@ -46,7 +46,14 @@
 	 terminate/2, 
 	 code_change/3]).
 
--compile(export_all).
+-export([set_bitrate/2]).
+-export([get_bitrate/1]).
+-export([get_version/1]).
+-export([get_serial/1]).
+-export([enable_timestamp/1]).
+-export([disable_timestamp/1]).
+
+%% -compile(export_all).
 
 -record(s, 
 	{
@@ -57,12 +64,11 @@
 	  baud_rate,       %% baud rate to canusb
 	  can_speed,       %% CAN bus speed
 	  status_interval, %% Check status interval
-	  status_timer,    %% Check status timer
 	  retry_interval,  %% Timeout for open retry
+	  retry_timer,     %% Timer reference for retry
 	  acc = [],        %% accumulator for command replies
 	  buf = <<>>,      %% parse buffer
-	  stat,            %% counter dictionary
-	  fs               %% can_router:fs_new()
+	  fs               %% can_filter:new()
 	}).
 
 -define(DEFAULT_BITRATE,         250000).
@@ -84,7 +90,8 @@
 	{baud,    DeviceBaud::integer()} |
 	{timeout, ReopenTimeout::timeout()} |
 	{bitrate, CANBitrate::integer()} |
-	{status_interval, Time::timeout()}.
+	{status_interval, Time::timeout()} |
+	{retry_interval, Time::timeout()}.
 	
 -spec start() -> {ok,pid()} | {error,Reason::term()}.
 start() ->
@@ -192,7 +199,8 @@ disable_timestamp(Pid) ->
 %%--------------------------------------------------------------------
 
 init([Id,Opts]) ->
-    RetryInterval = proplists:get_value(timeout, Opts, ?DEFAULT_RETRY_INTERVAL),
+    RetryInterval = proplists:get_value(retry_interval,Opts,
+					?DEFAULT_RETRY_INTERVAL),
     BitRate = proplists:get_value(bitrate,Opts,?DEFAULT_BITRATE),
     Interval = proplists:get_value(status_interval,Opts,
 				   ?DEFAULT_STATUS_INTERVAL),
@@ -222,12 +230,11 @@ init([Id,Opts]) ->
 		    S = #s { id=ID,
 			     device = Device,
 			     offset = Id,
-			     stat = dict:new(),
 			     baud_rate = Speed,
 			     can_speed = BitRate,
 			     status_interval = Interval,
 			     retry_interval = RetryInterval,
-			     fs=can_router:fs_new()
+			     fs=can_filter:new()
 			   },
 		    ?info("can_usb: using device ~s@~w\n", [Device, BitRate]),
 		    case open(S) of
@@ -239,35 +246,6 @@ init([Id,Opts]) ->
 	    end
     end.
 
-
-open(S0=#s {device = DeviceName, baud_rate = Speed,
-	    status_interval = Interval, can_speed = BitRate }) ->
-
-    DOpts = [{mode,binary},{baud,Speed},{packet,0},
-	     {csize,8},{stopb,1},{parity,none},{active,true}
-	     %% {buftm,1},{bufsz,128}
-	    ],    
-    case uart:open(DeviceName,DOpts) of
-	{ok,U} ->
-	    ?debug("canusb:open: ~s@~w", [DeviceName,Speed]),
-	    Timer = erlang:start_timer(Interval,self(),status),
-	    S = S0#s { uart=U, status_timer=Timer },
-	    canusb_sync(S),
-	    canusb_set_bitrate(S, BitRate),
-	    command_open(S),
-	    {ok, S};
-	{error, E} when E == eaccess;
-			E == enoent ->
-	    RetryTimeout = S0#s.retry_interval,
-	    ?debug("canusb:open: ~s@~w  error ~w, will try again "
-		   "in ~p msecs.", [DeviceName,Speed,E,RetryTimeout]),
-	    timer:send_after(RetryTimeout, retry),
-	    {ok, S0};
-	Error ->
-	    lager:error("canusb:open: error ~w", [Error]),
-	    Error
-    end.
-    
 %%--------------------------------------------------------------------
 %% Function: %% handle_call(Request, From, State) -> {reply, Reply, State} |
 %%                                      {reply, Reply, State, Timeout} |
@@ -281,8 +259,7 @@ handle_call({send,Mesg}, _From, S) ->
     {Reply,S1} = send_message(Mesg,S),
     {reply, Reply, S1};
 handle_call(statistics,_From,S) ->
-    Stat = dict:to_list(S#s.stat),
-    {reply,{ok,Stat}, S};
+    {reply,{ok,can_counter:list()}, S};
 handle_call({set_bitrate,Rate}, _From, S) ->
     case canusb_set_bitrate(S, Rate) of
 	{ok, _Reply, S1} ->
@@ -299,11 +276,15 @@ handle_call({command,Cmd}, _From, S) ->
 	{Error,S1} ->
 	    {reply, Error, S1}
     end;
-handle_call({add_filter,I,F}, _From, S) ->
-    Fs = can_router:fs_add(I,F,S#s.fs),
+handle_call({add_filter,F}, _From, S) ->
+    Fs = can_filter:add(F,S#s.fs),
     {reply, ok, S#s { fs=Fs }};
+handle_call({set_filter,I,F}, _From, S) ->
+    Fs = can_filter:set(I,F,S#s.fs),
+    S1 = S#s { fs=Fs },
+    {reply, ok, S1};
 handle_call({del_filter,I}, _From, S) ->
-    {Reply,Fs} = can_router:fs_del(I,S#s.fs),
+    {Reply,Fs} = can_filter:del(I,S#s.fs),
     {reply, Reply, S#s { fs=Fs }};
 handle_call(stop, _From, S) ->
     {stop, normal, ok, S};
@@ -321,23 +302,22 @@ handle_cast({send,Mesg}, S) ->
     {noreply, S1};
 
 handle_cast({statistics,From},S) ->
-    Stat = dict:to_list(S#s.stat),
-    gen_server:reply(From, {ok,Stat}),
+    gen_server:reply(From, {ok,can_counter:list()}),
     {noreply, S};
 handle_cast({add_filter,From,F}, S) ->
-    {I,Fs} = can_router:fs_add(F,S#s.fs),
+    {I,Fs} = can_filter:add(F,S#s.fs),
     gen_server:reply(From, {ok,I}),
     {noreply, S#s { fs=Fs }};
 handle_cast({del_filter,From,I}, S) ->
-    {Reply,Fs} = can_router:fs_del(I,S#s.fs),
+    {Reply,Fs} = can_filter:del(I,S#s.fs),
     gen_server:reply(From, Reply),
     {noreply, S#s { fs=Fs }};
 handle_cast({get_filter,From,I}, S) ->
-    Reply = can_router:fs_get(I,S#s.fs),
+    Reply = can_filter:get(I,S#s.fs),
     gen_server:reply(From, Reply),
     {noreply, S};  
 handle_cast({list_filter,From}, S) ->
-    Reply = can_router:fs_list(S#s.fs),
+    Reply = can_filter:list(S#s.fs),
     gen_server:reply(From, Reply),
     {noreply, S};
 handle_cast(_Mesg, S) ->
@@ -360,49 +340,57 @@ handle_info({uart,U,Data}, S) when S#s.uart == U ->
 handle_info({uart_error,U,Reason}, S) when U =:= S#s.uart ->
     if Reason =:= enxio ->
 	    lager:error("uart error ~p device ~s unplugged?", 
-			[Reason,S#s.device]);
+			[Reason,S#s.device]),
+	    {noreply, reopen(S)};
        true ->
 	    lager:error("uart error ~p for device ~s", 
-			[Reason,S#s.device])
-    end,
-    {noreply, S};
-handle_info({uart_closed,U}, S) when U =:= S#s.uart ->
-    uart:close(U),
-    RetryTimeout = S#s.retry_interval,
-    lager:error("uart device closed, will try again in ~p msecs.",
-		[RetryTimeout]),
-    timer:send_after(RetryTimeout, retry),
-    {noreply, S#s { uart=undefined }};
+			[Reason,S#s.device]),
+	    {noreply, S}
+    end;
 
-handle_info({timeout,Ref,status}, S) when Ref =:= S#s.status_timer ->
+handle_info({uart_closed,U}, S) when U =:= S#s.uart ->
+    lager:error("uart device closed, will try again in ~p msecs.",
+		[S#s.retry_interval]),
+    S1 = reopen(S),
+    {noreply, S1};
+
+handle_info({timeout,_TRef,status}, S) ->
     case command(S, "F") of
 	{ok, [$F|Status], S1} ->
 	    try erlang:list_to_integer(Status, 16) of
-		0 -> 
-		    {noreply,start_timer(S1)};
+		0 ->
+		    start_timer(S#s.status_interval,status),
+		    {noreply,S};
 		Code ->
 		    S2 = error_input(Code, S1),
-		    S3 = start_timer(S2),
-		    {noreply,S3}
+		    start_timer(S2#s.status_interval,status),
+		    {noreply,S2}
 	    catch
 		error:Reason ->
 		    lager:error("can_usb: status error: ~p", [Reason]),
-		    {noreply,start_timer(S1)}
+		    start_timer(S#s.status_interval,status),
+		    {noreply,S}
 	    end;
 	{ok, Status, S1} ->
 	    lager:error("can_usb: status error: ~p", [Status]),
-	    {noreply, start_timer(S1)};	    
+	    start_timer(S1#s.status_interval,status),
+	    {noreply,S1};
 	{{error,Reason}, S1} ->
 	    lager:error("can_usb: status error: ~p", [Reason]),
-	    {noreply, start_timer(S1)}
+	    start_timer(S1#s.status_interval,status),
+	    {noreply,S1}
     end;
-handle_info(retry, S) ->
-    case open(S) of
-	{ok, S1} -> {noreply, S1};
-	Error -> {stop, Error, S}
+
+handle_info({timeout,TRef,reopen},S) when TRef =:= S#s.retry_timer ->
+    case open(S#s { retry_timer = undefined }) of
+	{ok, S1} ->
+	    {noreply, S1};
+	Error ->
+	    {stop, Error, S}
     end;
 
 handle_info(_Info, S) ->
+    ?debug("can_usb: got info ~p", [_Info]),
     {noreply, S}.
     
 %%--------------------------------------------------------------------
@@ -426,9 +414,52 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal functions
 %%--------------------------------------------------------------------
 
-start_timer(S) ->
-    Timer = erlang:start_timer(S#s.status_interval,self(),status),
-    S#s { status_timer = Timer }.
+
+open(S0=#s {device = DeviceName, baud_rate = Speed,
+	    status_interval = Interval, can_speed = BitRate }) ->
+    DOpts = [{mode,binary},{baud,Speed},{packet,0},
+	     {csize,8},{stopb,1},{parity,none},{active,true}
+	     %% {debug,debug}
+	     %% {buftm,1},{bufsz,128}
+	    ],    
+    case uart:open(DeviceName,DOpts) of
+	{ok,U} ->
+	    ?debug("canusb:open: ~s@~w", [DeviceName,Speed]),
+	    start_timer(Interval,status),
+	    S = S0#s { uart=U },
+	    canusb_sync(S),
+	    canusb_set_bitrate(S, BitRate),
+	    command_open(S),
+	    {ok, S};
+	{error, E} when E =:= eaccess;
+			E =:= enoent ->
+	    ?debug("canusb:open: ~s@~w  error ~w, will try again "
+		   "in ~p msecs.", [DeviceName,Speed,E,S0#s.retry_interval]),
+	    Timer = start_timer(S0#s.retry_interval, reopen),
+	    {ok, S0#s { retry_timer = Timer }};
+	Error ->
+	    lager:error("canusb:open: error ~w", [Error]),
+	    Error
+    end.
+    
+reopen(S) ->
+    if S#s.uart =/= undefined ->
+	    ?debug("closing device ~s", [S#s.device]),
+	    R = uart:close(S#s.uart),
+	    ?debug("closed ~p", [R]),
+	    R;
+       true ->
+	    ok
+    end,
+    Timer = start_timer(S#s.retry_interval, reopen),
+    S#s { uart=undefined, buf=(<<>>), acc=[], retry_timer=Timer }.
+
+start_timer(undefined, _Tag) ->
+    undefined;
+start_timer(infinity, _Tag) ->
+    undefined;
+start_timer(Time, Tag) ->
+    erlang:start_timer(Time,self(),Tag).
 
 send_message(Mesg, S) when is_record(Mesg,can_frame) ->
     ?debug([{tag, frame}],"can_usb:send_message: [~s]", 
@@ -469,7 +500,7 @@ send_message(ID, L, Data, S) ->
 send_frame(S, Frame) ->
     case command(S, Frame) of
 	{ok,_Reply,S1} ->
-	    {ok, count(output_frames, S1)};
+	    {ok, count(output_frames,S1)};
 	{{error,Reason},S1} ->
 	    output_error(Reason,S1)
     end.
@@ -548,8 +579,8 @@ command(S, Command, Timeout) ->
 
 wait_reply(S,Timeout) ->
     receive
-	{uart,U,Data} when U==S#s.uart ->
-	    ?debug("can_usb:data: ~p", [Data]),	    
+	{uart,U,Data} when U=:=S#s.uart ->
+	    ?debug("can_usb:data: ~p", [Data]),
 	    Data1 = <<(S#s.buf)/binary,Data/binary>>,
 	    case parse(Data1, [], S#s{ buf=Data1 }) of
 		{more,S1} ->
@@ -562,7 +593,17 @@ wait_reply(S,Timeout) ->
 		    ?debug("can_usb:wait_reply: ~p", [Error]),
 		    {_, S2} = parse_all(S1),
 		    {Error,S2}
-	    end
+	    end;
+	{uart_error,U,enxio} when U =:= S#s.uart ->
+	    lager:error("uart error ~p device ~s unplugged?", 
+			[enxio,S#s.device]),
+	    {{error,enxio},reopen(S)};
+	{uart_error,U,Error} when U=:=S#s.uart ->
+	    {{error,Error}, S};
+	{uart_closed,U} when U =:= S#s.uart ->
+	    lager:error("uart close will reopen", []),
+	    {{error,closed},reopen(S)}
+	
     after Timeout ->
 	    {{error,timeout},S}
     end.
@@ -570,17 +611,17 @@ wait_reply(S,Timeout) ->
 ok(Buf,Acc,S)   -> {ok,lists:reverse(Acc),S#s { buf=Buf,acc=[]}}.
 error(Reason,Buf,S) -> {{error,Reason}, S#s { buf=Buf, acc=[]}}.
 
-count(Item,S) ->
-    Stat = dict:update_counter(Item, 1, S#s.stat),
-    S#s { stat = Stat }.
+count(Counter,S) ->
+    can_counter:update(Counter, 1),
+    S.
 
 output_error(Reason,S) ->
     {{error,Reason},oerr(Reason,S)}.
 
 oerr(Reason,S) ->
     ?debug("can_usb:output error: ~p", [Reason]),
-    S1 = count(output_error, S),
-    count({output_error,Reason}, S1).    
+    S1 = count(output_error,S),
+    count({output_error,Reason}, S1).
 
 ierr(Reason,S) ->
     ?debug("can_usb:input error: ~p", [Reason]),
@@ -719,7 +760,7 @@ parse_data(_L,_Rtr,Buf,_Acc) ->
 
 
 input(Frame, S) ->
-    case can_router:fs_input(Frame, S#s.fs) of
+    case can_filter:input(Frame, S#s.fs) of
 	true ->
 	    can_router:input(Frame),
 	    count(input_frames, S);
@@ -743,7 +784,7 @@ error_input(Code, S) ->
     case error_frame(Code band 16#FF, S#s.id) of
 	false -> S;
 	{true,Frame} ->
-	    case can_router:fs_input(Frame, S#s.fs) of
+	    case can_filter:input(Frame, S#s.fs) of
 		true ->
 		    can_router:input(Frame),
 		    count(error_frames, S);

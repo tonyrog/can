@@ -43,8 +43,7 @@
 	  device,      %% device name
 	  port,        %% port-id (registered as can_sock_prt)
 	  intf,        %% out-bound interface
-	  stat,        %% counter dictionary
-	  fs           %% can_router:fs_new()
+	  fs           %% can_filter:new()
 	}).	
 
 -type can_sock_option() ::
@@ -125,8 +124,7 @@ init([BusId,Opts]) ->
 					     device = Device,
 					     port = Port,
 					     intf = Index,
-					     stat = dict:new(),
-					     fs=can_router:fs_new()
+					     fs=can_filter:new()
 					   }};
 				Error ->
 				    {stop, Error}
@@ -155,23 +153,27 @@ handle_call({send,Mesg}, _From, S) when is_record(Mesg,can_frame) ->
     {reply, Reply, S1};
 
 handle_call(statistics,_From,S) ->
-    Stat = dict:to_list(S#s.stat),
-    {reply,{ok,Stat}, S};
+    {reply,{ok,can_counter:get_all()}, S};
 handle_call({add_filter,F}, _From, S) ->
-    {I,Fs} = can_router:fs_add(F,S#s.fs),
+    {I,Fs} = can_filter:add(F,S#s.fs),
     S1 = S#s { fs=Fs },
     apply_filters(S1),
     {reply, {ok,I}, S1};
+handle_call({set_filter,I,F}, _From, S) ->
+    Fs = can_filter:set(I,F,S#s.fs),
+    S1 = S#s { fs=Fs },
+    apply_filters(S1),
+    {reply, ok, S1};
 handle_call({del_filter,I}, _From, S) ->
-    {Reply,Fs} = can_router:fs_del(I,S#s.fs),
+    {Reply,Fs} = can_filter:del(I,S#s.fs),
     S1 = S#s { fs=Fs },
     apply_filters(S1),
     {reply, Reply, S1};
 handle_call({get_filter,I}, _From, S) ->
-    Reply = can_router:fs_get(I,S#s.fs),
+    Reply = can_filter:get(I,S#s.fs),
     {reply, Reply, S};  
 handle_call(list_filter, _From, S) ->
-    Reply = can_router:fs_list(S#s.fs),
+    Reply = can_filter:list(S#s.fs),
     {reply, Reply, S};
 handle_call(stop, _From, S) ->
     {stop, normal, ok, S};
@@ -189,27 +191,26 @@ handle_cast({send,Mesg}, S) when is_record(Mesg,can_frame) ->
     {noreply, S1};
 
 handle_cast({statistics,From},S) ->
-    Stat = dict:to_list(S#s.stat),
-    gen_server:reply(From, {ok,Stat}),
+    gen_server:reply(From, {ok,can_counter:list()}),
     {noreply, S};
 handle_cast({add_filter,From,F}, S) ->
-    {I,Fs} = can_router:fs_add(F,S#s.fs),
+    {I,Fs} = can_filter:add(F,S#s.fs),
     S1 = S#s { fs=Fs },
     gen_server:reply(From, {ok,I}),
     apply_filters(S1),
     {noreply, S1};
 handle_cast({del_filter,From,I}, S) ->
-    {Reply,Fs} = can_router:fs_del(I,S#s.fs),
+    {Reply,Fs} = can_filter:del(I,S#s.fs),
     S1 = S#s { fs=Fs },
     gen_server:reply(From, Reply),
     apply_filters(S1),
     {noreply, S1};
 handle_cast({get_filter,From,I}, S) ->
-    Reply = can_router:fs_get(I,S#s.fs),
+    Reply = can_filter:get(I,S#s.fs),
     gen_server:reply(From, Reply),
     {noreply, S};  
 handle_cast({list_filter,From}, S) ->
-    Reply = can_router:fs_list(S#s.fs),
+    Reply = can_filter:list(S#s.fs),
     gen_server:reply(From, Reply),
     {noreply, S};
 handle_cast(_Mesg, S) ->
@@ -270,10 +271,10 @@ send_message(Mesg, S) when is_record(Mesg,can_frame) ->
     end;
 send_message(_Mesg, S) ->
     output_error(?can_error_data,S).
-    
-count(Item,S) ->
-    Stat = dict:update_counter(Item, 1, S#s.stat),
-    S#s { stat = Stat }.
+
+count(Counter,S) ->
+    can_counter:update(Counter, 1),
+    S.
 
 output_error(Reason,S) ->
     {{error,Reason}, oerr(Reason,S)}.
@@ -287,7 +288,7 @@ oerr(Reason,S) ->
 %%    count({input_error,Reason}, S1).
 
 apply_filters(S) ->
-    {ok,Filter} = can_router:fs_list(S#s.fs),
+    {ok,Filter} = can_filter:list(S#s.fs),
     Fs = [F || {_I,F} <- Filter],
     %% io:format("apply_filters: fs=~p\n", [Fs]),
     _Res =
@@ -307,7 +308,7 @@ input(Frame, S) ->
     can_router:input(Frame),
     count(input_frames, S).
 
-%%    case can_router:fs_input(Frame, S#s.fs) of
+%%    case can_filter:input(Frame, S#s.fs) of
 %%	true ->
 %%	    can_router:input(Frame),
 %%	    count(input_frames, S);
@@ -315,4 +316,3 @@ input(Frame, S) ->
 %%	    S1 = count(input_frames, S),
 %%	    count(filter_frames, S1)
 %%  end.
-
