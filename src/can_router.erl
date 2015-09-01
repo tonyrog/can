@@ -564,7 +564,7 @@ get_interface_by_pid(Pid) ->
     lists:keyfind(Pid, #can_if.pid, get_interface_list()).
 
 get_interface_list() ->
-    [get({interface,I}) || {interface,I} <- erlang:get_keys()].
+    [If || {{interface,_},If} <- get()].
 
 send_if(If, Frame, S) ->
     Time = read_clock(),  %% time is decrementing to zero
