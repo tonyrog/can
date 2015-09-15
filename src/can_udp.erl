@@ -41,9 +41,12 @@
 
 -record(s, 
 	{
+	  receiver={can_router, undefined, undefined} ::
+	    {Module::atom(), %% Module to join and send to
+	     Pid::pid(),     %% Pid if not default server
+	     Id::integer()}, %% Interface id
 	  in,          %% incoming udp socket
-	  out,         %% out going udp socket
-	  id,          %% router id
+	  out,         %% outgoing udp socket
 	  maddr,       %% multicast address
 	  ifaddr,      %% interface address (any, {192,168,1,4} ...)
 	  mport,       %% port number used
@@ -63,6 +66,8 @@
 -define(CAN_MULTICAST_ADDR, {224,0,0,1}).
 -define(CAN_MULTICAST_IF,   {0,0,0,0}).
 -define(CAN_UDP_PORT, 51712).
+
+-define(DEFAULT_IF,0).
 
 -type can_udp_option() ::
 	{maddr,    inet:ip_address()} |
@@ -139,6 +144,8 @@ init([BusId, Opts]) ->
     MAddr  = proplists:get_value(maddr, Opts, ?CAN_MULTICAST_ADDR),
     Mttl   = proplists:get_value(ttl, Opts, 1),
     LAddr0 = proplists:get_value(ifaddr, Opts, ?CAN_MULTICAST_IF),
+    Router = proplists:get_value(router, Opts, can_router),
+    Pid = proplists:get_value(receiver, Opts, undefined),
     MPort = ?CAN_UDP_PORT+BusId,
     LAddr = if is_tuple(LAddr0) -> 
 		    LAddr0;
@@ -169,14 +176,17 @@ init([BusId, Opts]) ->
 	    {ok,OutPort} = inet:port(Out),
 	    case catch gen_udp:open(MPort,RecvOpts++MultiOpts) of
 		{ok,In} ->
-		    case can_router:join({?MODULE,MAddr,BusId}) of
-			{ok,ID} ->
-			    {ok,#s{ in=In, mport=MPort,
-				    out=Out, oport=OutPort,
-				    maddr=MAddr, id=ID,
-				    fs=can_filter:new()
-				  }};
-			Error ->
+		    case join(Router, Pid, {?MODULE,MAddr,BusId}) of
+			{ok, If} when is_integer(If) ->
+			    {ok, #s{ receiver={Router,Pid,If},
+				     in=In, mport=MPort,
+				     out=Out, oport=OutPort,
+				     maddr=MAddr,
+				     fs=can_filter:new()
+				   }};
+			{error, Reason} = Error ->
+			    lager:error("Failed to join ~p(~p), reason ~p", 
+					[Router, Pid, Reason]),
 			    {stop, Error}
 		    end;
 		{'EXIT',Reason} ->
@@ -187,7 +197,7 @@ init([BusId, Opts]) ->
 	Error ->
 	    {stop, Error}
     end.
-
+    
 %%--------------------------------------------------------------------
 %% Function: %% handle_call(Request, From, State) -> {reply, Reply, State} |
 %%                                      {reply, Reply, State, Timeout} |
@@ -276,25 +286,13 @@ handle_info({udp,U,_Addr,Port,Data}, S) when S#s.in == U ->
 			 [CId,FLen,CData]),
 		    Ts = ?CAN_NO_TIMESTAMP,
 		    Len = FLen band 16#f,
-		    case catch can:icreate(CId,Len,S#s.id,CData,Ts) of
-			{'EXIT', {Reason,_}} when is_atom(Reason) ->
-			    {noreply, ierr(Reason,S)};
-			{'EXIT', Reason} when is_atom(Reason) ->
-			    {noreply, ierr(Reason,S)};
-			{'EXIT', _Reason} ->
-			    {noreply, ierr(?can_error_corrupt,S)};
-			M when is_record(M,can_frame) ->
-			    S1 = input(M, S),
-			    {noreply, S1};
-			_Other ->
-			    ?debug("can_udp: Got ~p\n", [_Other]),
-			    {noreply, S}
-		    end;
+		    {noreply, input(CId,Len,CData,Ts,S)};
 		_ ->
 		    ?debug("can_udp: Got ~p\n", [Data]),
 		    {noreply, ierr(?can_error_corrupt,S)}
 	    end
     end;
+
 
 handle_info(_Info, S) ->
     {noreply, S}.
@@ -413,12 +411,44 @@ ierr(Reason,S) ->
     S1 = count(input_error, S),
     count({input_error,Reason}, S1).
 
-input(Frame, S) ->
-    case can_filter:input(Frame, S#s.fs) of
+join(Module, Pid, Arg) when is_atom(Module), is_pid(Pid) ->
+    Module:join(Pid, Arg);
+join(undefined, Pid, _Arg) when is_pid(Pid) ->
+    %% No join
+    ?DEFAULT_IF;
+join(Module, undefined, Arg) when is_atom(Module) ->
+    Module:join(Arg).
+    
+
+input(CId,Len,CData,Ts, S=#s {receiver = {_Module, _Pid, If}}) ->
+    case catch can:icreate(CId,Len,If,CData,Ts) of
+	{'EXIT', {Reason,_}} when is_atom(Reason) ->
+	    ierr(Reason,S);
+	{'EXIT', Reason} when is_atom(Reason) ->
+	    ierr(Reason,S);
+	{'EXIT', _Reason} ->
+	    ierr(?can_error_corrupt,S);
+	M when is_record(M,can_frame) ->
+	    input(M, S);
+	_Other ->
+	    ?debug("can_udp: Got ~p\n", [_Other]),
+	    S
+    end.
+
+input(Frame, S=#s {receiver = Receiver, fs = Fs}) ->
+    case can_filter:input(Frame, Fs) of
 	true ->
-	    can_router:input(Frame),
+	    input_frame(Frame, Receiver),
 	    count(input_frames, S);
 	false ->
 	    S1 = count(input_frames, S),
 	    count(filter_frames, S1)
     end.
+
+input_frame(Frame, {undefined, Pid, _If}) when is_pid(Pid) ->
+    Pid ! Frame;
+input_frame(Frame,{Module, undefined, _If}) when is_atom(Module) ->
+    Module:input(Frame);
+input_frame(Frame,{Module, Pid, _If}) when is_atom(Module), is_pid(Pid) ->
+    Module:input(Pid,Frame).
+

@@ -29,11 +29,11 @@
 %% API
 -export([start/0, start/1, stop/0]).
 -export([start_link/0, start_link/1]).
--export([join/1]).
+-export([join/1, join/2]).
 -export([attach/0, detach/0]).
 -export([send/1, send_from/2]).
 -export([sync_send/1, sync_send_from/2]).
--export([input/1, input_from/2]).
+-export([input/1, input/2, input_from/2]).
 -export([add_filter/4, del_filter/2, get_filter/2, list_filter/1]).
 -export([stop/1, restart/1]).
 -export([i/0, i/1]).
@@ -213,6 +213,9 @@ detach() ->
 join(Params) ->
     gen_server:call(?SERVER, {join, self(), Params}).
 
+join(Pid, Params) ->
+    gen_server:call(Pid, {join, self(), Params}).
+
 add_filter(Intf, Invert, ID, Mask) when 
       is_boolean(Invert), is_integer(ID), is_integer(Mask) ->
     gen_server:call(?SERVER, {add_filter, Intf, Invert, ID, Mask}).
@@ -241,6 +244,9 @@ sync_send_from(Pid,Frame) when is_pid(Pid), is_record(Frame, can_frame) ->
 %% Input from  backends
 input(Frame) when is_record(Frame, can_frame) ->
     gen_server:cast(?SERVER, {input, self(), Frame}).
+
+input(Pid, Frame) when is_record(Frame, can_frame) ->
+    gen_server:cast(Pid, {input, self(), Frame}).
 
 input_from(Pid,Frame) when is_pid(Pid), is_record(Frame, can_frame) ->
     gen_server:cast(?SERVER, {input, Pid, Frame}).

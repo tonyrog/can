@@ -39,7 +39,10 @@
 
 -record(s,
 	{
-	  id,          %% router id
+	  receiver={can_router, undefined, undefined} ::
+	    {Module::atom(), %% Module to join and send to
+	     Pid::pid(),     %% Pid if not default server
+	     Id::integer()}, %% Interface id
 	  device,      %% device name
 	  port,        %% port-id (registered as can_sock_prt)
 	  intf,        %% out-bound interface
@@ -48,6 +51,10 @@
 
 -type can_sock_option() ::
 	{device,  DeviceName::string()}.
+
+-define(DEFAULT_IF,0).
+
+
 %% currentl set with ip link command...
 %%	{bitrate, CANBitrate::integer()} |
 
@@ -111,6 +118,8 @@ stop(BusId) ->
 %%--------------------------------------------------------------------
 
 init([BusId,Opts]) ->
+    Router = proplists:get_value(router, Opts, can_router),
+    Pid = proplists:get_value(receiver, Opts, undefined),
     Device = proplists:get_value(device, Opts, "can0"),
     case can_sock_drv:open() of
 	{ok,Port} ->
@@ -118,15 +127,20 @@ init([BusId,Opts]) ->
 		{ok,Index} ->
 		    case can_sock_drv:bind(Port,Index) of
 			ok ->
-			    case can_router:join({?MODULE,Device,BusId}) of
-				{ok,ID} ->
-				    {ok,#s { id = ID,
+			    case join(Router, Pid, 
+				      {?MODULE,Device,BusId}) of
+				{ok, If} when is_integer(If) ->
+				    {ok, #s{ receiver={Router,Pid,If},
 					     device = Device,
 					     port = Port,
 					     intf = Index,
 					     fs=can_filter:new()
 					   }};
-				Error ->
+				{error, Reason} = Error ->
+				    lager:error("Failed to join ~p(~p), "
+						"reason ~p", [Router, 
+							      Pid, 
+							      Reason]),
 				    {stop, Error}
 			    end;
 			Error ->
@@ -223,10 +237,10 @@ handle_cast(_Mesg, S) ->
 %%                                       {stop, Reason, State}
 %% Description: Handling all non call/cast messages
 %%--------------------------------------------------------------------
-handle_info({Port,{data,Frame}}, S) when
-      is_record(Frame,can_frame), Port =:= S#s.port ->
+handle_info({Port,{data,Frame}}, S=#s {receiver = {_Router, _Pid, If}}) 
+  when is_record(Frame,can_frame), Port =:= S#s.port ->
     %% FIXME: add sub-interface ...
-    S1 = input(Frame#can_frame{intf=S#s.id}, S),
+    S1 = input(Frame#can_frame{intf=If}, S),
     {noreply, S1};
 handle_info(_Info, S) ->
     ?debug("can_sock: got message=~p\n", [_Info]),
@@ -301,11 +315,19 @@ apply_filters(S) ->
     %% io:format("Res = ~p\n", [_Res]),
     ok.
 
+join(Module, Pid, Arg) when is_atom(Module), is_pid(Pid) ->
+    Module:join(Pid, Arg);
+join(undefined, Pid, _Arg) when is_pid(Pid) ->
+    %% No join
+    ?DEFAULT_IF;
+join(Module, undefined, Arg) when is_atom(Module) ->
+    Module:join(Arg).
+    
 %% The filters are pushed onto the driver, here we
 %% should check that this is also the case.
-input(Frame, S) ->
+input(Frame, S=#s {receiver = Receiver}) ->
     %% read number of filtered frames ?
-    can_router:input(Frame),
+    input_frame(Frame, Receiver),
     count(input_frames, S).
 
 %%    case can_filter:input(Frame, S#s.fs) of
@@ -316,3 +338,11 @@ input(Frame, S) ->
 %%	    S1 = count(input_frames, S),
 %%	    count(filter_frames, S1)
 %%  end.
+
+input_frame(Frame, {undefined, Pid, _If}) when is_pid(Pid) ->
+    Pid ! Frame;
+input_frame(Frame,{Module, undefined, _If}) when is_atom(Module) ->
+    Module:input(Frame);
+input_frame(Frame,{Module, Pid, _If}) when is_atom(Module), is_pid(Pid) ->
+    Module:input(Pid,Frame).
+

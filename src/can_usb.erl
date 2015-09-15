@@ -57,7 +57,10 @@
 
 -record(s, 
 	{
-	  id,              %% interface id
+	  receiver={can_router, undefined, 0} ::
+	    {Module::atom(), %% Module to join and send to
+	     Pid::pid(),     %% Pid if not default server
+	     If::integer()}, %% Interface id
 	  uart,            %% serial line port id
 	  device,          %% device name
 	  offset,          %% Usb port offset
@@ -75,6 +78,7 @@
 -define(DEFAULT_STATUS_INTERVAL, 1000).
 -define(DEFAULT_RETRY_INTERVAL,  2000).
 -define(DEFAULT_BAUDRATE,        115200).
+-define(DEFAULT_IF,              0).
 
 -define(SERVER, ?MODULE).
 
@@ -199,6 +203,8 @@ disable_timestamp(Pid) ->
 %%--------------------------------------------------------------------
 
 init([Id,Opts]) ->
+    Router = proplists:get_value(router, Opts, can_router),
+    Pid = proplists:get_value(receiver, Opts, undefined),
     RetryInterval = proplists:get_value(retry_interval,Opts,
 					?DEFAULT_RETRY_INTERVAL),
     BitRate = proplists:get_value(bitrate,Opts,?DEFAULT_BITRATE),
@@ -224,25 +230,27 @@ init([Id,Opts]) ->
 	    ?error("can_usb: missing device argument"),
 	    {stop, einval};
        true ->
-	    case can_router:join({?MODULE,Device,Id}) of
-		{ok,ID} ->
-		    ?debug("can_usb:joined: intf=~w", [ID]),
-		    S = #s { id=ID,
-			     device = Device,
-			     offset = Id,
-			     baud_rate = Speed,
-			     can_speed = BitRate,
-			     status_interval = Interval,
-			     retry_interval = RetryInterval,
-			     fs=can_filter:new()
-			   },
+	    case join(Router, Pid, {?MODULE,Device,Id}) of
+		{ok, If} when is_integer(If) ->
+		    ?debug("can_usb:joined: intf=~w", [If]),
+		    S = #s{ receiver={Router,Pid,If},
+			    device = Device,
+			    offset = Id,
+			    baud_rate = Speed,
+			    can_speed = BitRate,
+			    status_interval = Interval,
+			    retry_interval = RetryInterval,
+			    fs=can_filter:new()
+			  },
 		    ?info("can_usb: using device ~s@~w\n", [Device, BitRate]),
 		    case open(S) of
 			{ok, S1} -> {ok, S1};
 			Error -> {stop, Error}
 		    end;
-		Error ->
-		    {stop,Error}
+		{error, Reason} = E ->
+		    lager:error("Failed to join ~p(~p), reason ~p", 
+				[Router, Pid, Reason]),
+		    {stop, E}
 	    end
     end.
 
@@ -713,10 +721,10 @@ parse_29(_Buf,_Rtr,S) ->
     {more, S}.
     
 
-parse_message(ID,Len,Ext,Rtr,Ds,S) ->
+parse_message(ID,Len,Ext,Rtr,Ds,S=#s {receiver = {_Module, _Pid, If}}) ->
     case parse_data(Len,Rtr,Ds,[]) of
 	{ok,Data,Ts,More} ->
-	    try can:create(ID,Len,Ext,Rtr,S#s.id,Data,Ts) of
+	    try can:create(ID,Len,Ext,Rtr,If,Data,Ts) of
 		Frame ->
 		    S1 = input(Frame, S#s {buf=More}),
 		    parse(More,[],S1)
@@ -731,6 +739,7 @@ parse_message(ID,Len,Ext,Rtr,Ds,S) ->
 	{{error,Reason},_Buf} ->
 	    parse_error(Reason, S)
     end.
+
 
 parse_data(L,Rtr,<<Z3,Z2,Z1,Z0,$\r,Buf/binary>>, Acc) when L=:=0; Rtr=:=true->
     case catch erlang:list_to_integer([Z3,Z2,Z1,Z0],16) of
@@ -758,17 +767,30 @@ parse_data(L,Rtr,_Buf,_Acc) when L > 0, Rtr =:= false ->
 parse_data(_L,_Rtr,Buf,_Acc) ->
     {{error,?can_error_corrupt}, Buf}.
 
-
-input(Frame, S) ->
-    case can_filter:input(Frame, S#s.fs) of
+join(Module, Pid, Arg) when is_atom(Module), is_pid(Pid) ->
+    Module:join(Pid, Arg);
+join(undefined, Pid, _Arg) when is_pid(Pid) ->
+    %% No join
+    ?DEFAULT_IF;
+join(Module, undefined, Arg) when is_atom(Module) ->
+    Module:join(Arg).
+  
+input(Frame, S=#s {receiver = Receiver, fs = Fs}) ->
+    case can_filter:input(Frame, Fs) of
 	true ->
-	    can_router:input(Frame),
+	    input_frame(Frame, Receiver),
 	    count(input_frames, S);
 	false ->
 	    S1 = count(input_frames, S),
 	    count(filter_frames, S1)
     end.
 
+input_frame(Frame, {undefined, Pid, _If}) when is_pid(Pid) ->
+    Pid ! Frame;
+input_frame(Frame,{Module, undefined, _If}) when is_atom(Module) ->
+    Module:input(Frame);
+input_frame(Frame,{Module, Pid, _If}) when is_atom(Module), is_pid(Pid) ->
+    Module:input(Pid,Frame).
 
 %% Error codes return by CANUSB
 -define(CANUSB_ERROR_RECV_FIFO_FULL,   16#01).
@@ -780,13 +802,13 @@ input(Frame, S) ->
 -define(CANUSB_ERROR_ARBITRATION_LOST, 16#40).
 -define(CANUSB_ERROR_BUS,              16#80).
 
-error_input(Code, S) ->
-    case error_frame(Code band 16#FF, S#s.id) of
+error_input(Code, S=#s {receiver = Receiver = {_Module, _Pid, If}, fs = Fs}) ->
+    case error_frame(Code band 16#FF, If) of
 	false -> S;
 	{true,Frame} ->
-	    case can_filter:input(Frame, S#s.fs) of
+	    case can_filter:input(Frame, Fs) of
 		true ->
-		    can_router:input(Frame),
+		    input_frame(Frame, Receiver),
 		    count(error_frames, S);
 		false ->
 		    S1 = count(error_frames, S),
