@@ -167,7 +167,7 @@ handle_call({send,Mesg}, _From, S) when is_record(Mesg,can_frame) ->
     {reply, Reply, S1};
 
 handle_call(statistics,_From,S) ->
-    {reply,{ok,can_counter:get_all()}, S};
+    {reply,{ok,can_counter:list()}, S};
 handle_call({add_filter,F}, _From, S) ->
     {I,Fs} = can_filter:add(F,S#s.fs),
     S1 = S#s { fs=Fs },
