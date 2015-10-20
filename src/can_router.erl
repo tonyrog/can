@@ -46,7 +46,6 @@
 
 -import(lists, [foreach/2, map/2, foldl/3]).
 
--include_lib("lager/include/log.hrl").
 -include("../include/can.hrl").
 
 -define(SERVER, can_router).
@@ -309,7 +308,7 @@ handle_call({attach,Pid}, _From, S) when is_pid(Pid) ->
     Apps = S#s.apps,
     case lists:keysearch(Pid, #can_app.pid, Apps) of
 	false ->
-	    ?debug("can_router: process ~p attached.",  [Pid]),
+	    lager:debug("can_router: process ~p attached.",  [Pid]),
 	    Mon = erlang:monitor(process, Pid),
 	    %% We may extend app interface someday - now = 0
 	    App = #can_app { pid=Pid, mon=Mon, interface=0 },
@@ -324,7 +323,7 @@ handle_call({detach,Pid}, _From, S) when is_pid(Pid) ->
 	false ->
 	    {reply, ok, S};
 	{value,App=#can_app {}} ->
-	    ?debug("can_router: process ~p detached.",  [Pid]),
+	    lager:debug("can_router: process ~p detached.",  [Pid]),
 	    Mon = App#can_app.mon,
 	    erlang:demonitor(Mon),
 	    receive {'DOWN',Mon,_,_,_} -> ok
@@ -335,13 +334,13 @@ handle_call({detach,Pid}, _From, S) when is_pid(Pid) ->
 handle_call({join,Pid,Param}, _From, S) ->
     case get_interface_by_param(Param) of
 	false ->
-	    ?debug("can_router: process ~p, param ~p joined.",  [Pid, Param]),
+	    lager:debug("can_router: process ~p, param ~p joined.",  [Pid, Param]),
 	    {ID,S1} = add_if(Pid,Param,S),
 	    {reply, {ok,ID}, S1};
 	If ->
 	    receive
 		{'EXIT', OldPid, _Reason} when If#can_if.pid =:= OldPid ->
-		    ?debug("join: restart detected\n", []),
+		    lager:debug("join: restart detected\n", []),
 		    {ID,S1} = add_if(Pid,Param,S),
 		    {reply, {ok,ID}, S1}
 	    after 0 ->
@@ -457,13 +456,13 @@ handle_info({'DOWN',_Ref,process,Pid,_Reason},S) ->
 		false ->
 		    {noreply, S};
 		If ->
-		    ?debug("can_router: interface ~p died, reason ~p\n", 
+		    lager:debug("can_router: interface ~p died, reason ~p\n", 
 			   [If, _Reason]),
 		    erase_interface(If#can_if.id),
 		    {noreply,S}
 	    end;
 	{value,_App,Apps} ->
-	    ?debug("can_router: application ~p died, reason ~p\n", 
+	    lager:debug("can_router: application ~p died, reason ~p\n", 
 		   [_App, _Reason]),
 	    %% FIXME: Restart?
 	    {noreply,S#s { apps = Apps }}
@@ -472,12 +471,12 @@ handle_info({'EXIT', Pid, Reason}, S) ->
     case get_interface_by_pid(Pid) of
 	false ->
 	    %% Someone else died, log and terminate
-	    ?debug("can_router: linked process ~p died, reason ~p, terminating\n", 
+	    lager:debug("can_router: linked process ~p died, reason ~p, terminating\n", 
 		   [Pid, Reason]),
 	    {stop, Reason, S};
 	If ->
 	    %% One of our interfaces died, log and ignore
-	    ?debug("can_router: interface ~p died, reason ~p\n", 
+	    lager:debug("can_router: interface ~p died, reason ~p\n", 
 		   [If, Reason]),
 	    erase_interface(If#can_if.id),
 	    {noreply,S}

@@ -1,3 +1,4 @@
+%%% coding: latin-1
 %%%---- BEGIN COPYRIGHT -------------------------------------------------------
 %%%
 %%% Copyright (C) 2007 - 2013, Rogvall Invest AB, <tony@rogvall.se>
@@ -26,7 +27,6 @@
 
 -behaviour(supervisor).
 
--include_lib("lager/include/log.hrl").
 %% external exports
 -export([start_link/0, 
 	 start_link/1, 

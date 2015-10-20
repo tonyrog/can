@@ -26,8 +26,6 @@
 
 -behaviour(application).
 
--include_lib("lager/include/log.hrl").
-
 %% Application callbacks
 -export([start/2,
 	 start/0,

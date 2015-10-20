@@ -25,7 +25,6 @@
 
 -behaviour(gen_server).
 
--include_lib("lager/include/log.hrl").
 -include("../include/can.hrl").
 
 %% API
@@ -113,9 +112,9 @@ start_link(BusId) when is_integer(BusId) ->
 -spec start_link(BusId::integer(),Opts::[can_udp_option()]) ->
 		   {ok,pid()} | {error,Reason::term()}.    
 start_link(BusId,Opts) ->
-    ?debug("can_udp: start_link ~p ~p\n", [BusId,Opts]),
+    lager:debug("can_udp: start_link ~p ~p\n", [BusId,Opts]),
     Res = gen_server:start_link(?MODULE, [BusId, Opts], []),
-    ?debug("can_udp: res ~p\n", [Res]),
+    lager:debug("can_udp: res ~p\n", [Res]),
     Res.
     
 
@@ -152,14 +151,14 @@ init([BusId, Opts]) ->
 	       is_list(LAddr0) ->
 		     case lookup_ip(LAddr0, inet) of
 			 {error,_} ->
-			     ?warning("No such interface ~p",[LAddr0]),
+			     lager:warning("No such interface ~p",[LAddr0]),
 			     {0,0,0,0};
 			 {ok,IP} -> IP
 		     end;
 		LAddr0 =:= any -> 
 		    {0,0,0,0};
 		true ->
-		     ?warning("No such interface ~p",[LAddr0]),
+		     lager:warning("No such interface ~p",[LAddr0]),
 		    {0,0,0,0}
 	    end,
     RAddr = ?CAN_MULTICAST_IF,
@@ -264,7 +263,7 @@ handle_cast({list_filter,From}, S) ->
     gen_server:reply(From, Reply),
     {noreply, S};
 handle_cast(_Mesg, S) ->
-    ?debug("can_udp: handle_cast: ~p\n", [_Mesg]),
+    lager:debug("can_udp: handle_cast: ~p\n", [_Mesg]),
     {noreply, S}.
 
 
@@ -276,19 +275,19 @@ handle_cast(_Mesg, S) ->
 %%--------------------------------------------------------------------
 handle_info({udp,U,_Addr,Port,Data}, S) when S#s.in == U ->
     if Port =:= S#s.oport ->
-	    ?debug("can_udp: discard ~p ~p ~p\n", [_Addr,Port,Data]),
+	    lager:debug("can_udp: discard ~p ~p ~p\n", [_Addr,Port,Data]),
 	    {noreply, S};
        true->
 	    %% FIXME: add check that _Addr is a local address
 	    case Data of
  		<<CId:32/little,FLen:32/little,CData:8/binary>> ->
-		    ?debug("CUd=~8.16.0B, FLen=~8.16.0B, CData=~p\n",
+		    lager:debug("CUd=~8.16.0B, FLen=~8.16.0B, CData=~p\n",
 			 [CId,FLen,CData]),
 		    Ts = ?CAN_NO_TIMESTAMP,
 		    Len = FLen band 16#f,
 		    {noreply, input(CId,Len,CData,Ts,S)};
 		_ ->
-		    ?debug("can_udp: Got ~p\n", [Data]),
+		    lager:debug("can_udp: Got ~p\n", [Data]),
 		    {noreply, ierr(?can_error_corrupt,S)}
 	    end
     end;
@@ -353,7 +352,7 @@ get_family_addr([],_Family) -> {error, enoent}.
 
 
 send_message(Mesg, S) when is_record(Mesg,can_frame) ->
-    ?debug([{tag, frame}],"can_udp:send_message: [~s]", 
+    lager:debug([{tag, frame}],"can_udp:send_message: [~s]", 
 	   [can_probe:format_frame(Mesg)]),
     if is_binary(Mesg#can_frame.data) ->
 	    send_bin_message(Mesg, Mesg#can_frame.data, S);
@@ -392,7 +391,7 @@ send_message(ID, Len, Data, S) ->
 	ok ->
 	    {ok,count(output_frames, S)};
 	_Error ->
-	    ?debug("gen_udp: failure=~p\n", [_Error]),
+	    lager:debug("gen_udp: failure=~p\n", [_Error]),
 	    output_error(?can_error_transmission,S)
     end.
 
@@ -431,7 +430,7 @@ input(CId,Len,CData,Ts, S=#s {receiver = {_Module, _Pid, If}}) ->
 	M when is_record(M,can_frame) ->
 	    input(M, S);
 	_Other ->
-	    ?debug("can_udp: Got ~p\n", [_Other]),
+	    lager:debug("can_udp: Got ~p\n", [_Other]),
 	    S
     end.
 

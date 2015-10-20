@@ -25,7 +25,6 @@
 
 -behaviour(gen_server).
 
--include_lib("lager/include/log.hrl").
 -include("../include/can.hrl").
 
 %% API
@@ -228,7 +227,7 @@ handle_cast({list_filter,From}, S) ->
     gen_server:reply(From, Reply),
     {noreply, S};
 handle_cast(_Mesg, S) ->
-    ?debug("can_sock: handle_cast: ~p\n", [_Mesg]),
+    lager:debug("can_sock: handle_cast: ~p\n", [_Mesg]),
     {noreply, S}.
 
 %%--------------------------------------------------------------------
@@ -243,7 +242,7 @@ handle_info({Port,{data,Frame}}, S=#s {receiver = {_Router, _Pid, If}})
     S1 = input(Frame#can_frame{intf=If}, S),
     {noreply, S1};
 handle_info(_Info, S) ->
-    ?debug("can_sock: got message=~p\n", [_Info]),
+    lager:debug("can_sock: got message=~p\n", [_Info]),
     {noreply, S}.
 
 %%--------------------------------------------------------------------
