@@ -667,10 +667,7 @@ parse(Buf0, Acc, S) ->
 	<<$r,Buf/binary>>       -> parse_11(Buf,true,S#s{buf=Buf0});
 	<<$T,Buf/binary>>       -> parse_29(Buf,false,S#s{buf=Buf0});
 	<<$R,Buf/binary>>       -> parse_29(Buf,true,S#s{buf=Buf0});
-	<<_Skip,Buf/binary>>    ->
-	   %% skip random character
-	   lager:warning("random canusb character ~w",[_Skip]),
-	   parse(Buf, Acc, S)
+	<<C,Buf/binary>>        -> parse(Buf, [C|Acc], S)
     end.
 
 sync(S) ->
