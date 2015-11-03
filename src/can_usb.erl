@@ -337,7 +337,7 @@ handle_cast(_Mesg, S) ->
 %%                                       {stop, Reason, State}
 %% Description: Handling all non call/cast messages
 %%--------------------------------------------------------------------
-handle_info({uart,U,Data}, S) when S#s.uart == U ->
+handle_info({uart,U,Data}, S) when S#s.uart =:= U ->
     NewBuf = <<(S#s.buf)/binary, Data/binary>>,
     lager:debug("handle_info: NewBuf=~p", [NewBuf]),
     {_,S1} = parse_all(S#s { buf = NewBuf}),
@@ -576,11 +576,11 @@ command(S, Command) ->
     command(S, Command, ?COMMAND_TIMEOUT).
 
 command(S, Command, Timeout) ->
-    lager:debug("can_usb:command: [~p]", [Command]),
+    BCommand = iolist_to_binary([Command,$\r]),
+    lager:debug("can_usb:command: [~p]", [BCommand]),
     if S#s.uart =:= undefined ->
 	    {{error,eagain},S};
        true ->
-       	    BCommand = iolist_to_binary([Command, $\r]),
 	    uart:send(S#s.uart, BCommand),
 	    wait_reply(S,Timeout)
     end.
