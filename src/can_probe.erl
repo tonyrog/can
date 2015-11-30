@@ -48,7 +48,7 @@ init(Opts) ->
 	Time -> erlang:start_timer(Time, self(), done)
     end,
     MaxFrames = proplists:get_value(max_frame, Opts, -1),
-    T0 = now(),
+    T0 = erlang:monotonic_time(),
     loop(T0, MaxFrames).
 
 loop(_T, 0) ->
@@ -56,7 +56,7 @@ loop(_T, 0) ->
 loop(T0, FrameCount) ->
     receive
 	Frame = #can_frame {} ->
-	    print_frame(timer:now_diff(now(),T0), Frame),
+	    print_frame(erlang:monotonic_time() - T0, Frame),
 	    loop(T0, FrameCount - 1);
 	{timeout, _Ref, done} ->
 	    ok;
