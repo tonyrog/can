@@ -30,10 +30,38 @@
 -export([icreate/5]).
 -export([send/5, send_from/4, send_from/6]).
 
+-export([pause/0, resume/0]).
+-export([pause/1, resume/1]).
 
 start() ->
     application:start(uart),
     application:start(can).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Pause an interface.
+%% @end
+%%--------------------------------------------------------------------
+-spec pause(If::integer()) -> ok | {error, Reason::term()}.
+pause(If) when is_integer(If) ->
+    can_router:pause(If).
+
+-spec pause() -> {error, Reason::term()}.
+pause() ->
+    {error, interface_required}.
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Resume an interface.
+%% @end
+%%--------------------------------------------------------------------
+-spec resume(If::integer()) -> ok | {error, Reason::term()}.
+resume(If) when is_integer(If) ->
+    can_router:resume(If).
+    
+-spec resume() -> {error, Reason::term()}.
+resume() ->
+    {error, interface_required}.
 
 %%
 %% API for applicatins and backends to create CAN frames

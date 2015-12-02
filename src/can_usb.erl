@@ -52,6 +52,9 @@
 -export([enable_timestamp/1]).
 -export([disable_timestamp/1]).
 
+%% Test API
+-export([pause/1, resume/1]).
+-export([dump/1]).
 %% -compile(export_all).
 
 -record(s, 
@@ -68,6 +71,7 @@
 	  status_interval, %% Check status interval
 	  retry_interval,  %% Timeout for open retry
 	  retry_timer,     %% Timer reference for retry
+	  pause = false,   %% Pause input
 	  acc = [],        %% accumulator for command replies
 	  buf = <<>>,      %% parse buffer
 	  fs               %% can_filter:new()
@@ -94,7 +98,8 @@
 	{timeout, ReopenTimeout::timeout()} |
 	{bitrate, CANBitrate::integer()} |
 	{status_interval, Time::timeout()} |
-	{retry_interval, Time::timeout()}.
+	{retry_interval, Time::timeout()} |
+	{pause, Pause::boolean()}.
 	
 -spec start() -> {ok,pid()} | {error,Reason::term()}.
 start() ->
@@ -192,6 +197,17 @@ disable_timestamp(Pid) ->
 	    Error
     end.
 
+-spec pause(Id::integer()| pid()) -> ok | {error, Error::atom()}.
+pause(Id) when is_integer(Id); is_pid(Id) ->
+    gen_server:call(server(Id), pause).
+-spec resume(Id::integer()| pid()) -> ok | {error, Error::atom()}.
+resume(Id) when is_integer(Id); is_pid(Id) ->
+    gen_server:call(server(Id), resume).
+
+-spec dump(Id::integer()| pid()) -> ok | {error, Error::atom()}.
+dump(Id) when is_integer(Id); is_pid(Id) ->
+    gen_server:call(server(Id),dump).
+
 %%--------------------------------------------------------------------
 %% Function: init(Args) -> {ok, State} |
 %%                         {ok, State, Timeout} |
@@ -206,6 +222,7 @@ init([Id,Opts]) ->
     Pid = proplists:get_value(receiver, Opts, undefined),
     RetryInterval = proplists:get_value(retry_interval,Opts,
 					?DEFAULT_RETRY_INTERVAL),
+    Pause = proplists:get_value(pause, Opts, false),
     BitRate = proplists:get_value(bitrate,Opts,?DEFAULT_BITRATE),
     Interval = proplists:get_value(status_interval,Opts,
 				   ?DEFAULT_STATUS_INTERVAL),
@@ -239,6 +256,7 @@ init([Id,Opts]) ->
 			    can_speed = BitRate,
 			    status_interval = Interval,
 			    retry_interval = RetryInterval,
+			    pause = Pause,
 			    fs=can_filter:new()
 			  },
 		    lager:info("using device ~s@~w\n", [Device, BitRate]),
@@ -262,9 +280,13 @@ init([Id,Opts]) ->
 %%                                      {stop, Reason, State}
 %% Description: Handling call messages
 %%--------------------------------------------------------------------
-handle_call({send,Mesg}, _From, S) ->
-    {Reply,S1} = send_message(Mesg,S),
+handle_call({send,Msg}, _From, S=#s {uart = Uart})  
+  when Uart =/= undefined ->
+    {Reply,S1} = send_message(Msg,S),
     {reply, Reply, S1};
+handle_call({send,Msg}, _From, S) ->
+    lager:warning("Msg ~p dropped", [Msg]),
+    {reply, ok, S};
 handle_call(statistics,_From,S) ->
     {reply,{ok,can_counter:list()}, S};
 handle_call({set_bitrate,Rate}, _From, S) ->
@@ -293,6 +315,28 @@ handle_call({set_filter,I,F}, _From, S) ->
 handle_call({del_filter,I}, _From, S) ->
     {Reply,Fs} = can_filter:del(I,S#s.fs),
     {reply, Reply, S#s { fs=Fs }};
+handle_call(pause, _From, S=#s {pause = false, uart = Uart}) 
+  when Uart =/= undefined ->
+    lager:debug("pause.", []),
+    lager:debug("closing device ~s", [S#s.device]),
+    R = uart:close(S#s.uart),
+    lager:debug("closed ~p", [R]),
+    {reply, ok, S#s {pause = true}};
+handle_call(pause, _From, S) ->
+    lager:debug("pause when not active.", []),
+    {reply, ok, S#s {pause = true}};
+handle_call(resume, _From, S=#s {pause = true}) ->
+    lager:debug("resume.", []),
+    case open(S#s {pause = false}) of
+	{ok, S1} -> {reply, ok, S1};
+	Error -> {reply, Error, S}
+    end;
+handle_call(resume, _From, S=#s {pause = false}) ->
+    lager:debug("resume when not paused.", []),
+    {reply, ok, S};
+handle_call(dump, _From, S) ->
+    lager:debug("dump.", []),
+    {reply, {ok, S}, S};
 handle_call(stop, _From, S) ->
     {stop, normal, ok, S};
 handle_call(_Request, _From, S) ->
@@ -422,6 +466,8 @@ code_change(_OldVsn, State, _Extra) ->
 %%--------------------------------------------------------------------
 
 
+open(S=#s {pause = true}) ->
+    {ok, S};
 open(S0=#s {device = DeviceName, baud_rate = Speed,
 	    status_interval = Interval, can_speed = BitRate }) ->
     DOpts = [{mode,binary},{baud,Speed},{packet,0},
@@ -449,6 +495,8 @@ open(S0=#s {device = DeviceName, baud_rate = Speed,
 	    Error
     end.
     
+reopen(S=#s {pause = true}) ->
+    S;
 reopen(S) ->
     if S#s.uart =/= undefined ->
 	    lager:debug("closing device ~s", [S#s.device]),
@@ -878,5 +926,9 @@ error_frame(Code, ID, Intf, D0, D1, D2, D3, D4) ->
 			D0, D1, D2, D3, D4)
     end.
 
-       
+server(Pid) when is_pid(Pid)->
+    Pid;
+server(BusId) when is_integer(BusId) ->
+    can_router:interface_pid(BusId).
+      
 	    

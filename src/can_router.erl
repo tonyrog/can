@@ -38,12 +38,17 @@
 -export([stop/1, restart/1]).
 -export([i/0, i/1]).
 -export([statistics/0]).
+-export([pause/1, resume/1]).
 -export([debug/2, interfaces/0, interface/1, interface_pid/1]).
 -export([config_change/3]).
 
 %% gen_server callbacks
--export([init/1, handle_call/3, handle_cast/2, handle_info/2,
-	 terminate/2, code_change/3]).
+-export([init/1, 
+	 handle_call/3, 
+	 handle_cast/2, 
+	 handle_info/2,
+	 terminate/2, 
+	 code_change/3]).
 
 -import(lists, [foreach/2, map/2, foldl/3]).
 
@@ -151,6 +156,12 @@ debug(Id, Bool) ->
 
 stop(Id) ->
     call_if(Id, stop).    
+
+pause(Id) when is_integer(Id)->
+    call_if(Id, pause).    
+
+resume(Id) when is_integer(Id)->
+    call_if(Id, resume).    
 
 restart(Id) ->
     case gen_server:call(?SERVER, {interface,Id}) of

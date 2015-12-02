@@ -38,6 +38,10 @@
 
 -export([reuse_port/0]).
 
+%% Test API
+-export([pause/1, resume/1]).
+-export([dump/1]).
+
 -record(s, 
 	{
 	  receiver={can_router, undefined, undefined} ::
@@ -50,6 +54,7 @@
 	  ifaddr,      %% interface address (any, {192,168,1,4} ...)
 	  mport,       %% port number used
 	  oport,       %% output port number used
+	  pause = false,   %% Pause input
 	  fs           %% can_filter:new()
 	 }).
 
@@ -74,7 +79,8 @@
 	{ttl,     integer()} |
 	{timeout, ReopenTimeout::integer()} |
 	{bitrate, CANBitrate::integer()} |
-	{status_interval, Time::timeout()}.
+	{status_interval, Time::timeout()} |
+	{pause, Pause::boolean()}.
 
 %%====================================================================
 %% API
@@ -128,6 +134,17 @@ stop(BusId) ->
 	    Error
     end.
 
+-spec pause(Id::integer()| pid()) -> ok | {error, Error::atom()}.
+pause(Id) when is_integer(Id); is_pid(Id) ->
+    gen_server:call(server(Id), pause).
+-spec resume(Id::integer()| pid()) -> ok | {error, Error::atom()}.
+resume(Id) when is_integer(Id); is_pid(Id) ->
+    gen_server:call(server(Id), resume).
+
+-spec dump(Id::integer()| pid()) -> ok | {error, Error::atom()}.
+dump(Id) when is_integer(Id); is_pid(Id) ->
+    gen_server:call(server(Id),dump).
+
 %%====================================================================
 %% gen_server callbacks
 %%====================================================================
@@ -146,6 +163,7 @@ init([BusId, Opts]) ->
     Router = proplists:get_value(router, Opts, can_router),
     Pid = proplists:get_value(receiver, Opts, undefined),
     MPort = ?CAN_UDP_PORT+BusId,
+    Pause = proplists:get_value(pause, Opts, false),
     LAddr = if is_tuple(LAddr0) -> 
 		    LAddr0;
 	       is_list(LAddr0) ->
@@ -181,6 +199,7 @@ init([BusId, Opts]) ->
 				     in=In, mport=MPort,
 				     out=Out, oport=OutPort,
 				     maddr=MAddr,
+				     pause = Pause,
 				     fs=can_filter:new()
 				   }};
 			{error, Reason} = Error ->
@@ -228,6 +247,20 @@ handle_call({get_filter,I}, _From, S) ->
 handle_call(list_filter, _From, S) ->
     Reply = can_filter:list(S#s.fs),
     {reply, Reply, S};
+handle_call(pause, _From, S=#s {pause = false}) ->
+    {reply, {error, not_implemented_yet}, S#s {pause = true}};
+handle_call(pause, _From, S) ->
+    lager:debug("pause when not active.", []),
+    {reply, ok, S#s {pause = true}};
+handle_call(resume, _From, S=#s {pause = true}) ->
+    lager:debug("resume.", []),
+    {reply, {error, not_implemented_yet}, S=#s {pause = false}};
+handle_call(resume, _From, S=#s {pause = false}) ->
+    lager:debug("resume when not paused.", []),
+    {reply, ok, S};
+handle_call(dump, _From, S) ->
+    lager:debug("dump.", []),
+    {reply, {ok, S}, S};
 handle_call(stop, _From, S) ->
     {stop, normal, ok, S};
 handle_call(_Request, _From, S) ->
@@ -451,3 +484,7 @@ input_frame(Frame,{Module, undefined, _If}) when is_atom(Module) ->
 input_frame(Frame,{Module, Pid, _If}) when is_atom(Module), is_pid(Pid) ->
     Module:input(Pid,Frame).
 
+server(Pid) when is_pid(Pid)->
+    Pid;
+server(BusId) when is_integer(BusId) ->
+    can_router:interface_pid(BusId).
