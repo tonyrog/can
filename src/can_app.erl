@@ -31,6 +31,7 @@
 	 start/0,
 	 stop/1,
 	 stop/0]).
+-export([config_change/3]).
 
 %%%===================================================================
 %%% Application callbacks
@@ -52,8 +53,7 @@
 %% @end
 %%--------------------------------------------------------------------
 start(_StartType, _StartArgs) ->
-    Args = application:get_all_env(can),
-    can_sup:start_link(Args).
+    can_sup:start_link([]).
 
 %% @private
 start() ->
@@ -74,5 +74,9 @@ stop(_State) ->
 
 %% @private
 stop() ->
-    application:stop(can),
-    application:stop(uart).
+    application:stop(can).
+%% application:stop(uart). some one else might use uart!?
+
+%% application changed config callback
+config_change(Changed,New,Removed) ->
+    can_router:config_change(Changed,New,Removed).

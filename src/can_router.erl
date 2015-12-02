@@ -39,6 +39,7 @@
 -export([i/0, i/1]).
 -export([statistics/0]).
 -export([debug/2, interfaces/0, interface/1, interface_pid/1]).
+-export([config_change/3]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
@@ -250,6 +251,8 @@ input(Pid, Frame) when is_record(Frame, can_frame) ->
 input_from(Pid,Frame) when is_pid(Pid), is_record(Frame, can_frame) ->
     gen_server:cast(?SERVER, {input, Pid, Frame}).
 
+config_change(Changed,New,Removed) ->
+    gen_server:call(?SERVER, {config_change,Changed,New,Removed}).
 %%--------------------------------------------------------------------
 %% Shortcut API
 %%--------------------------------------------------------------------
@@ -276,7 +279,8 @@ stop() ->
 %%                         {stop, Reason}
 %% Description: Initiates the server
 %%--------------------------------------------------------------------
-init(Args) ->
+init(Args0) ->
+    Args = Args0 ++ application:get_all_env(can),
     lager:start(),  %% ok testing, remain or go?
     process_flag(trap_exit, true),
     start_clock(),
@@ -411,6 +415,11 @@ handle_call({list_filter,Intf}, From, S) ->
 
 handle_call(stop, _From, S) ->
     {stop, normal, ok, S};
+
+handle_call({config_change,_Changed,_New,_Removed},_From,S) ->
+    io:format("config_change changed=~p, new=~p, removed=~p\n",
+	      [_Changed,_New,_Removed]),
+    {reply, ok, S};
 
 handle_call(_Request, _From, S) ->
     {reply, {error, bad_call}, S}.
