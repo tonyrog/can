@@ -4,5 +4,5 @@
   {registered, [can_router]},
   {mod,{can_app,[]}},
   {env, []},
-  {applications,[kernel,stdlib,uart]}
+  {applications,[kernel,stdlib,uart,lager]}
   ]}.
