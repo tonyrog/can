@@ -41,6 +41,8 @@
 -export([pause/1, resume/1]).
 -export([debug/2, interfaces/0, interface/1, interface_pid/1]).
 -export([config_change/3]).
+-export([if_state_supervision/1]).
+-export([if_state_event/2, if_state_event/3]).
 
 %% gen_server callbacks
 -export([init/1, 
@@ -63,7 +65,8 @@
 	  id,       %% interface id
 	  mon,      %% can app monitor
 	  param,    %% match param normally {Mod,Name,Index} 
-	  atime     %% last input activity time
+	  atime,    %% last input activity time
+	  state = up
 	}).
 
 -record(can_app,
@@ -78,7 +81,8 @@
 	  if_count = 1,  %% interface id counter
 	  apps = [],     %% attached can applications
 	  wakeup_timeout :: timeout(),
-	  wakeup = false :: boolean()
+	  wakeup = false :: boolean(),
+	  supervisors = [] ::list({pid(), reference()})
 	}).
 
 -define(CLOCK_TIME, 16#ffffffff).
@@ -264,6 +268,19 @@ input_from(Pid,Frame) when is_pid(Pid), is_record(Frame, can_frame) ->
 
 config_change(Changed,New,Removed) ->
     gen_server:call(?SERVER, {config_change,Changed,New,Removed}).
+
+%% Supervise
+if_state_supervision(OnOff) 
+  when OnOff =:= on; OnOff =:= off ->
+    gen_server:call(?SERVER, {supervise, OnOff, self()}).
+
+if_state_event(If, State) 
+  when State =:= up; State =:= down ->
+    ?SERVER ! {if_state_event, If, State}.
+if_state_event(Pid, If, State) 
+  when State =:= up; State =:= down ->
+    Pid ! {if_state_event, If, State}.
+
 %%--------------------------------------------------------------------
 %% Shortcut API
 %%--------------------------------------------------------------------
@@ -424,13 +441,32 @@ handle_call({list_filter,Intf}, From, S) ->
 	    {noreply,S}
     end;
 
-handle_call(stop, _From, S) ->
-    {stop, normal, ok, S};
+handle_call({supervise, on, Pid} = M, _From, S=#s {supervisors = Sups}) ->
+    lager:debug("message ~p", [M]),
+    case lists:keyfind(Pid, 1, Sups) of
+	{Pid, _Mon}  ->
+	    {reply, ok, S};
+	false ->
+	    Mon = erlang:monitor(process, Pid),
+	    {reply, ok, S#s {supervisors = [{Pid, Mon} | Sups]}}
+    end;
 
+handle_call({supervise, off, Pid} = M, _From, S=#s {supervisors = Sups}) ->
+    lager:debug("message ~p", [M]),
+    case lists:keytake(Pid, 1, Sups) of
+	false ->
+	    {reply, ok, S};
+	{value, {Pid, Mon}, NewSups}  ->
+	    erlang:demonitor(Mon, [flush]),
+	    {reply, ok, S#s {supervisors = NewSups}}
+    end;
 handle_call({config_change,_Changed,_New,_Removed},_From,S) ->
     io:format("config_change changed=~p, new=~p, removed=~p\n",
 	      [_Changed,_New,_Removed]),
     {reply, ok, S};
+
+handle_call(stop, _From, S) ->
+    {stop, normal, ok, S};
 
 handle_call(_Request, _From, S) ->
     {reply, {error, bad_call}, S}.
@@ -469,12 +505,35 @@ handle_cast(_Msg, S) ->
 %%                                       {stop, Reason, State}
 %% Description: Handling all non call/cast messages
 %%--------------------------------------------------------------------
-handle_info({'DOWN',_Ref,process,Pid,_Reason},S) ->
+handle_info({if_state_event, Id, State} = M, S) ->
+    lager:debug("~p",[M]),
+    case get_interface_by_id(Id) of
+	false ->
+	   lager:warning("Recieved ~p from unknown interface",[M]),
+	   {noreply, S};
+	If ->
+	    if If#can_if.state =/= State ->
+		    set_interface(If#can_if { state = State }),
+		    inform_supervisors(M, S#s.supervisors);
+	       true ->
+		    ok
+	    end,
+	    {noreply, S}
+    end;
+
+handle_info({'DOWN',Ref,process,Pid,_Reason},S) ->
     case lists:keytake(Pid, #can_app.pid, S#s.apps) of
 	false ->
 	    case get_interface_by_pid(Pid) of
 		false ->
-		    {noreply, S};
+		    case lists:keytake(Pid, 1, S#s.supervisors) of
+			false ->
+			    {noreply, S};
+			{value, {Pid, Ref}, NewSups} ->
+			    lager:warning("supervisor ~p died, reason=~p", 
+					  [Pid,_Reason]),
+			    {noreply, S#s { supervisors = NewSups}}
+		    end;
 		If ->
 		    lager:debug("can_router: interface ~p died, reason ~p\n", 
 			   [If, _Reason]),
@@ -626,6 +685,12 @@ send_wakeup_if(If, Nid, S) ->
     gen_server:cast(If#can_if.pid, {send, Frame}),
     count(stat_out, S).
 
+inform_supervisors(_Msg, []) ->
+    ok;
+inform_supervisors(Msg, [{Pid, _Mon} | Sups]) ->
+    lager:debug("informing ~p of ~p", [Pid, Msg]),
+    Pid ! Msg,
+    inform_supervisors(Msg, Sups).
 
 %% Broadcast a message to applications/simulated can buses
 %% and joined CAN interfaces

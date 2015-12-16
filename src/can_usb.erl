@@ -348,10 +348,13 @@ handle_call(_Request, _From, S) ->
 %%                                      {stop, Reason, State}
 %% Description: Handling cast messages
 %%--------------------------------------------------------------------
-handle_cast({send,Mesg}, S) ->
-    {_, S1} = send_message(Mesg, S),
+handle_cast({send,Msg}, S=#s {uart = Uart})  
+  when Uart =/= undefined ->
+    {_, S1} = send_message(Msg, S),
     {noreply, S1};
-
+handle_cast({send,Msg}, S) ->
+    lager:warning("Msg ~p dropped", [Msg]),
+    {noreply, S};
 handle_cast({statistics,From},S) ->
     gen_server:reply(From, {ok,can_counter:list()}),
     {noreply, S};
@@ -389,6 +392,7 @@ handle_info({uart,U,Data}, S) when S#s.uart =:= U ->
     {noreply, S1};
 
 handle_info({uart_error,U,Reason}, S) when U =:= S#s.uart ->
+    send_state(down, S#s.receiver),
     if Reason =:= enxio ->
 	    lager:error("uart error ~p device ~s unplugged?", 
 			[Reason,S#s.device]),
@@ -400,6 +404,7 @@ handle_info({uart_error,U,Reason}, S) when U =:= S#s.uart ->
     end;
 
 handle_info({uart_closed,U}, S) when U =:= S#s.uart ->
+    send_state(down, S#s.receiver),
     lager:error("uart device closed, will try again in ~p msecs.",
 		[S#s.retry_interval]),
     S1 = reopen(S),
@@ -483,6 +488,7 @@ open(S0=#s {device = DeviceName, baud_rate = Speed,
 	    canusb_sync(S),
 	    canusb_set_bitrate(S, BitRate),
 	    command_open(S),
+	    send_state(up, S#s.receiver),
 	    {ok, S};
 	{error, E} when E =:= eaccess;
 			E =:= enoent ->
@@ -501,6 +507,7 @@ reopen(S) ->
     if S#s.uart =/= undefined ->
 	    lager:debug("closing device ~s", [S#s.device]),
 	    R = uart:close(S#s.uart),
+	    send_state(down, S#s.receiver),
 	    lager:debug("closed ~p", [R]),
 	    R;
        true ->
@@ -556,6 +563,9 @@ send_frame(S, Frame) ->
     case command(S, Frame) of
 	{ok,_Reply,S1} ->
 	    {ok, count(output_frames,S1)};
+	{{error,eagain = Reason},S1} ->
+	    send_state(down, S1#s.receiver),
+	    output_error(Reason,S1);
 	{{error,Reason},S1} ->
 	    output_error(Reason,S1)
     end.
@@ -838,7 +848,14 @@ input_frame(Frame, {undefined, Pid, _If}) when is_pid(Pid) ->
 input_frame(Frame,{Module, undefined, _If}) when is_atom(Module) ->
     Module:input(Frame);
 input_frame(Frame,{Module, Pid, _If}) when is_atom(Module), is_pid(Pid) ->
-    Module:input(Pid,Frame).
+    Module:input(Pid, Frame).
+
+send_state(State, {undefined, Pid, If}) when is_pid(Pid) ->
+    Pid ! {if_state_event, If, State};
+send_state(State,{Module, undefined, If}) when is_atom(Module) ->
+    Module:if_state_event(If, State);
+send_state(State,{Module, Pid, If}) when is_atom(Module), is_pid(Pid) ->
+    Module:if_state_event(Pid, If, State).
 
 %% Error codes return by CANUSB
 -define(CANUSB_ERROR_RECV_FIFO_FULL,   16#01).
