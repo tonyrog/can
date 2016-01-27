@@ -34,6 +34,7 @@
 -export([pause/1, resume/1]).
 
 start() ->
+    lager:start(),
     application:start(uart),
     application:start(can).
 
