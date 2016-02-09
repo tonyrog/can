@@ -46,8 +46,8 @@
 	{
 	  receiver={can_router, undefined, undefined} ::
 	    {Module::atom(), %% Module to join and send to
-	     Pid::pid(),     %% Pid if not default server
-	     Id::integer()}, %% Interface id
+	     Pid::pid() | undefined,     %% Pid if not default server
+	     Id::integer() | undefined}, %% Interface id
 	  in,          %% incoming udp socket
 	  out,         %% outgoing udp socket
 	  maddr,       %% multicast address
