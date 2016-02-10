@@ -61,9 +61,9 @@
 	{
 	  receiver={can_router, undefined, 0} ::
 	    {Module::atom(), %% Module to join and send to
-	     Pid::pid() | undefined,     %% Pid if not default server
+	     Pid::pid() | undefined, %% Pid if not default server
 	     If::integer()}, %% Interface id
-	  uart::port(),            %% serial line port id
+	  uart::port() | undefined, %% serial line port id
 	  device,          %% device name
 	  offset,          %% Usb port offset
 	  baud_rate,       %% baud rate to canusb
