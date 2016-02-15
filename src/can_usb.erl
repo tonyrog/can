@@ -61,9 +61,9 @@
 	{
 	  receiver={can_router, undefined, 0} ::
 	    {Module::atom(), %% Module to join and send to
-	     Pid::pid(),     %% Pid if not default server
+	     Pid::pid() | undefined, %% Pid if not default server
 	     If::integer()}, %% Interface id
-	  uart,            %% serial line port id
+	  uart::port() | undefined, %% serial line port id
 	  device,          %% device name
 	  offset,          %% Usb port offset
 	  baud_rate,       %% baud rate to canusb
@@ -630,9 +630,15 @@ command_close(S) ->
 %%    {ok,Reply,S'}
 %%  | {{error,Reason}, S'}
 %%
+-spec command(#s{},iolist()) -> 
+		     {{'error',term()},#s{}} | 
+		     {'ok',list(byte()),#s{}}.
 command(S, Command) ->
     command(S, Command, ?COMMAND_TIMEOUT).
 
+-spec command(#s{},iolist(),integer()) -> 
+		     {{'error',term()},#s{}} | 
+		     {'ok',list(byte()),#s{}}.
 command(S, Command, Timeout) ->
     BCommand = iolist_to_binary([Command,$\r]),
     lager:debug("can_usb:command: [~p]", [BCommand]),
@@ -643,6 +649,9 @@ command(S, Command, Timeout) ->
 	    wait_reply(S,Timeout)
     end.
 
+-spec wait_reply(#s{},integer()) -> 
+			{{'error',term()},#s{}} | 
+			{'ok',list(byte()),#s{}}.
 wait_reply(S,Timeout) ->
     receive
 	{uart,U,Data} when U=:=S#s.uart ->
