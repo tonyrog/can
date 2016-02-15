@@ -758,15 +758,12 @@ parse_error(Reason, S) ->
 %% Parse a t or r (11-bit) frame
 %% Buf0 is the start of start of frame data
 parse_11(<<I2,I1,I0,L,Ds/binary>>,Rtr,S) ->
-    if L >= $0, L =< $8 ->
-	    try erlang:list_to_integer([I2,I1,I0],16) of
-		ID ->
-		    parse_message(ID,L-$0,false,Rtr,Ds,S)
-	    catch
-		error:_ ->
-		    %% bad frame ID
-		    parse(Ds,[],ierr(?can_error_corrupt,S))
-	    end;
+    if L >= $0, L =< $9 ->
+	    parse_([I2,I1,I0],L-$0,false,Rtr,Ds,S);
+       L >= $A, L =< $F ->
+	    parse_([I2,I1,I0],(L-$A)+10,false,Rtr,Ds,S);
+       L >= $a, L =< $f ->
+	    parse_([I2,I1,I0],(L-$a)+10,false,Rtr,Ds,S);
        true ->
 	    parse(Ds,[],ierr(?can_error_length_out_of_range,S))
     end;
@@ -774,20 +771,27 @@ parse_11(_Buf,_Rtr,S) ->
     {more, S}.
 
 parse_29(<<I7,I6,I5,I4,I3,I2,I1,I0,L,Ds/binary>>,Rtr,S) ->
-    if L >= $0, L =< $8 ->
-	    try erlang:list_to_integer([I7,I6,I5,I4,I3,I2,I1,I0],16) of
-		ID ->
-		    parse_message(ID,L-$0,true,Rtr,Ds,S)
-	    catch
-		error:_ ->
-		    %% bad frame ID
-		    parse(Ds,[],ierr(?can_error_corrupt,S))
-	    end;
+    if L >= $0, L =< $9 ->
+	    parse_([I7,I6,I5,I4,I3,I2,I1,I0],L-$0,true,Rtr,Ds,S);
+       L >= $A, L =< $F ->
+	    parse_([I7,I6,I5,I4,I3,I2,I1,I0],(L-$A)+10,true,Rtr,Ds,S);
+       L >= $a, L =< $f ->
+	    parse_([I7,I6,I5,I4,I3,I2,I1,I0],(L-$a)+10,true,Rtr,Ds,S);
        true ->
 	    parse(Ds,[],ierr(?can_error_length_out_of_range,S))
     end;
 parse_29(_Buf,_Rtr,S) ->
     {more, S}.
+
+parse_(IDs,Len,Ext,Rtr,Ds,S) ->
+    try erlang:list_to_integer(IDs,16) of
+	ID ->
+	    parse_message(ID,Len,Ext,Rtr,Ds,S)
+    catch
+	error:_ ->
+	    %% bad frame ID
+	    parse(Ds,[],ierr(?can_error_corrupt,S))
+    end.
     
 
 parse_message(ID,Len,Ext,Rtr,Ds,S=#s {receiver = {_Module, _Pid, If}}) ->
