@@ -40,7 +40,7 @@
 	{
 	  receiver={can_router, undefined, undefined} ::
 	    {Module::atom(), %% Module to join and send to
-	     Pid::pid(),     %% Pid if not default server
+	     Pid::pid() | undefined,     %% Pid if not default server
 	     Id::integer()}, %% Interface id
 	  device,      %% device name
 	  port,        %% port-id (registered as can_sock_prt)

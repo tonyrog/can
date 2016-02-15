@@ -23,7 +23,7 @@
 
 -module(can_probe).
 
--export([start/0,start/1,start/2,stop/1,init/1]).
+-export([start/0,start/1,stop/1,init/1]).
 -export([format_frame/1]).
 
 -include_lib("can/include/can.hrl").
@@ -32,11 +32,7 @@ start() ->
     start([]).
 
 start(Opts) ->
-    can_udp:start(),  %% testing
     spawn_link(?MODULE, init, [Opts]).
-
-start(BusId, IOpts) when is_integer(BusId) ->
-    can_udp:start(BusId, IOpts).
 
 stop(Pid) ->
     Pid ! stop.
@@ -48,7 +44,7 @@ init(Opts) ->
 	Time -> erlang:start_timer(Time, self(), done)
     end,
     MaxFrames = proplists:get_value(max_frame, Opts, -1),
-    T0 = now(),
+    T0 = os:timestamp(),
     loop(T0, MaxFrames).
 
 loop(_T, 0) ->
@@ -56,7 +52,7 @@ loop(_T, 0) ->
 loop(T0, FrameCount) ->
     receive
 	Frame = #can_frame {} ->
-	    print_frame(timer:now_diff(now(),T0), Frame),
+	    print_frame(timer:now_diff(os:timestamp(),T0), Frame),
 	    loop(T0, FrameCount - 1);
 	{timeout, _Ref, done} ->
 	    ok;
@@ -65,31 +61,31 @@ loop(T0, FrameCount) ->
     end.
 
 format_frame(Frame) ->
-    ["ID: ", if ?is_can_frame_eff(Frame) ->
+    ["id: ", if ?is_can_frame_eff(Frame) ->
 		    io_lib:format("~8.16.0B", 
 				  [Frame#can_frame.id band ?CAN_EFF_MASK]);
 		true ->
 		     io_lib:format("~3.16.0B", 
 				   [Frame#can_frame.id band ?CAN_SFF_MASK])
 	     end,
-     " LEN:", io_lib:format("~w", [Frame#can_frame.len]),
+     " len:", io_lib:format("~w", [Frame#can_frame.len]),
      if ?is_can_frame_eff(Frame) ->
-	     " EXT";
+	     " ext";
 	true ->
 	     ""
      end,
      if Frame#can_frame.intf>0 ->
-	     [" INTF:", io_lib:format("~w", [Frame#can_frame.intf])];
+	     [" intf:", io_lib:format("~w", [Frame#can_frame.intf])];
 	true ->
 	     []
      end,
      if ?is_can_frame_rtr(Frame) ->
-	     " RTR";
+	     " rtr";
 	true ->
-	     [" DATA:", format_data(Frame#can_frame.data)]
+	     [" data:", format_data(Frame#can_frame.data)]
      end,
      if ?is_can_valid_timestamp(Frame) ->
-	     ["TS:", io_lib:format("~w", [Frame#can_frame.ts])];
+	     ["ts:", io_lib:format("~w", [Frame#can_frame.ts])];
 	true -> []
      end
     ].
