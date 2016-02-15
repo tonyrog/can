@@ -543,18 +543,20 @@ send_bin_message(_Mesg, _Bin, S) ->
     output_error(?can_error_data_too_large,S).
 
 send_message(ID, L, Data, S) ->
+    DCL = if L < 10 -> L+$0; true -> (L-10)+$A end,
+    Len = min(L,8),
     if ?is_can_id_sff(ID), ?is_not_can_id_rtr(ID) ->
 	    ID1 = ID band ?CAN_SFF_MASK,
-	    send_frame(S, [$t,to_hex(ID1,3), L+$0, to_hex_min(Data,L)]);
+	    send_frame(S, [$t,to_hex(ID1,3), DCL, to_hex_min(Data,Len)]);
        ?is_can_id_eff(ID), ?is_not_can_id_rtr(ID) ->
 	    ID1 = ID band ?CAN_EFF_MASK,
-	    send_frame(S, [$T,to_hex(ID1,8), L+$0, to_hex_min(Data,L)]);
+	    send_frame(S, [$T,to_hex(ID1,8), DCL, to_hex_min(Data,Len)]);
        ?is_can_id_sff(ID), ?is_can_id_rtr(ID) ->
 	    ID1 = ID band ?CAN_SFF_MASK,
-	    send_frame(S, [$r,to_hex(ID1,3), L+$0, to_hex_max(Data,8)]);
+	    send_frame(S, [$r,to_hex(ID1,3), DCL, to_hex_max(Data,8)]);
        ?is_can_id_eff(ID), ?is_can_id_rtr(ID) ->
 	    ID1 = ID band ?CAN_EFF_MASK,
-	    send_frame(S, [$R,to_hex(ID1,8), L+$0, to_hex_max(Data,8)]);
+	    send_frame(S, [$R,to_hex(ID1,8), DCL, to_hex_max(Data,8)]);
        true ->
 	    output_error(?can_error_data,S)
     end.
@@ -575,7 +577,7 @@ ihex(I) ->
 
 %% minimum L elements - fill with 0  
 to_hex_min(_,0) -> [];
-to_hex_min(<<>>,I) -> [$0|to_hex_min(<<>>,I-1)];
+to_hex_min(<<>>,I) -> [$0,$0|to_hex_min(<<>>,I-1)];
 to_hex_min(<<H1:4,H2:4,Rest/binary>>,I) ->
     [ihex(H1),ihex(H2) | to_hex_min(Rest,I-1)].
 
