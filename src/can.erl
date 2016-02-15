@@ -99,10 +99,10 @@ icreate(ID,Len,Intf,Data,Ts) ->
 	    erlang:error(?can_error_id_out_of_range);
        L > 8 ->
 	    erlang:error(?can_error_data_too_large);
-       Len < 0; Len > 8 ->
+       Len < 0; Len > 15 ->
 	    erlang:error(?can_error_length_out_of_range);
-       ?is_not_can_id_rtr(ID), Len > L ->
-	    erlang:error(?can_error_data_too_small);
+       Len < L ->
+	    erlang:error(?can_error_length_out_of_range);
        true ->
 	    #can_frame { id=ID,len=Len,data=Data1,intf=Intf,ts=Ts}
     end.
