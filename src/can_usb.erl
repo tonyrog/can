@@ -356,7 +356,10 @@ handle_cast({send,Msg}, S=#s {uart = Uart})
     {_, S1} = send_message(Msg, S),
     {noreply, S1};
 handle_cast({send,Msg}, S) ->
-    lager:warning("Msg ~p dropped", [Msg]),
+    if not S#s.pause ->
+	    lager:warning("Msg ~p dropped", [Msg]);
+       true -> ok
+    end,
     {noreply, S};
 handle_cast({statistics,From},S) ->
     gen_server:reply(From, {ok,can_counter:list()}),
