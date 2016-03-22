@@ -285,7 +285,10 @@ handle_call({send,Msg}, _From, S=#s {uart = Uart})
     {Reply,S1} = send_message(Msg,S),
     {reply, Reply, S1};
 handle_call({send,Msg}, _From, S) ->
-    lager:warning("Msg ~p dropped", [Msg]),
+    if not S#s.pause ->
+	    lager:warning("Msg ~p dropped", [Msg]);
+       true -> ok
+    end,
     {reply, ok, S};
 handle_call(statistics,_From,S) ->
     {reply,{ok,can_counter:list()}, S};
