@@ -100,7 +100,7 @@ The interfaces in the environment will get under supervision.
 #### Remove a (virtual) CAN network interface 'vcan0'
     $ sudo ip link del vcan0
 
-#### Set bitrate of interface can0 to 250000
+#### Set bitrate on interface can0 to 250000
 
      $ sudo ip link set can0 down
      $ sudo ip link set dev can0 type can bitrate 250000
