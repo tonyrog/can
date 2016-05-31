@@ -30,8 +30,8 @@
 -export([icreate/5]).
 -export([send/5, send_from/4, send_from/6]).
 
--export([pause/0, resume/0]).
--export([pause/1, resume/1]).
+-export([pause/0, resume/0, ifstatus/0]).
+-export([pause/1, resume/1, ifstatus/1]).
 
 start() ->
     lager:start(),
@@ -64,6 +64,18 @@ resume(If) when is_integer(If) ->
 resume() ->
     {error, interface_required}.
 
+%%--------------------------------------------------------------------
+%% @doc
+%% Get active status of interface.
+%% @end
+%%--------------------------------------------------------------------
+-spec ifstatus(If::integer()) -> {ok, Status::atom()} | {error, Reason::term()}.
+ifstatus(If) when is_integer(If) ->
+    can_router:ifstatus(If).
+    
+-spec ifstatus() -> {error, Reason::term()}.
+ifstatus() ->
+    {error, interface_required}.
 %%
 %% API for applicatins and backends to create CAN frames
 %%

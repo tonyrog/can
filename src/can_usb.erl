@@ -53,7 +53,7 @@
 -export([disable_timestamp/1]).
 
 %% Test API
--export([pause/1, resume/1]).
+-export([pause/1, resume/1, ifstatus/1]).
 -export([dump/1]).
 %% -compile(export_all).
 
@@ -203,6 +203,9 @@ pause(Id) when is_integer(Id); is_pid(Id) ->
 -spec resume(Id::integer()| pid()) -> ok | {error, Error::atom()}.
 resume(Id) when is_integer(Id); is_pid(Id) ->
     gen_server:call(server(Id), resume).
+-spec ifstatus(If::integer()) -> {ok, Status::atom()} | {error, Reason::term()}.
+ifstatus(Id) when is_integer(Id); is_pid(Id) ->
+    gen_server:call(server(Id), ifstatus).
 
 -spec dump(Id::integer()| pid()) -> ok | {error, Error::atom()}.
 dump(Id) when is_integer(Id); is_pid(Id) ->
@@ -337,6 +340,9 @@ handle_call(resume, _From, S=#s {pause = true}) ->
 handle_call(resume, _From, S=#s {pause = false}) ->
     lager:debug("resume when not paused.", []),
     {reply, ok, S};
+handle_call(ifstatus, _From, S=#s {pause = Pause}) ->
+    lager:debug("ifstatus.", []),
+    {reply, {ok, if Pause -> paused; true -> active end}, S};
 handle_call(dump, _From, S) ->
     lager:debug("dump.", []),
     {reply, {ok, S}, S};
