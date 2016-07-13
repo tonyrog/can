@@ -184,8 +184,8 @@ ifstatus(Id) ->
 
 ifstatus() ->
     %% For all interfaces
-    lists:foldl(fun(#can_if{pid = Pid, param = {BE, _, BI}}, Acc) ->
-			[{{BE, BI}, gen_server:call(Pid, ifstatus)} | Acc]
+    lists:foldl(fun(#can_if{pid = Pid, id = Id, param = {BE, _, _}}, Acc) ->
+			[{{BE, Id}, gen_server:call(Pid, ifstatus)} | Acc]
 		end, [], interfaces()).
    
 			       
