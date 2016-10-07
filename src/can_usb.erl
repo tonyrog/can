@@ -498,7 +498,7 @@ open(S0=#s {device = DeviceName, baud_rate = Speed,
 	     %% {debug,debug}
 	     %% {buftm,1},{bufsz,128}
 	    ],    
-    case uart:open(DeviceName,DOpts) of
+    case uart:open1(DeviceName,DOpts) of
 	{ok,U} ->
 	    lager:debug("canusb:open: ~s@~w", [DeviceName,Speed]),
 	    start_timer(Interval,status),
