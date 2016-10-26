@@ -538,21 +538,20 @@ handle_cast(_Msg, S) ->
 %%                                       {stop, Reason, State}
 %% Description: Handling all non call/cast messages
 %%--------------------------------------------------------------------
-handle_info({if_state_event, Id, State} = M, S) ->
-    lager:debug("~p",[M]),
+handle_info({if_state_event, Id, State} = _M, S) ->
+    %% interface state changes reported by the interface processes
+    lager:debug("~p",[_M]),
     case get_interface_by_id(Id) of
 	false ->
-	   lager:warning("Recieved ~p from unknown interface",[M]),
-	   {noreply, S};
-	If ->
-	    if If#can_if.state =/= State ->
-		    set_interface(If#can_if { state = State }),
-		    inform_supervisors(M, S#s.supervisors);
-	       true ->
-		    ok
-	    end,
-	    {noreply, S}
-    end;
+	   lager:warning("Recieved ~p from unknown interface",[_M]);
+	If=#can_if {state = SOld, param = P} when SOld =/= State ->
+	    set_interface(If#can_if { state = State }),
+	    Msg = {if_state_event, {Id, P}, State},
+	    inform_supervisors(Msg, S#s.supervisors);
+	_If ->
+	    lager:debug("Recieved ~p, no state change",[_M])
+    end,
+    {noreply, S};
 
 handle_info({'DOWN',Ref,process,Pid,_Reason},S) ->
     case lists:keytake(Pid, #can_app.pid, S#s.apps) of
