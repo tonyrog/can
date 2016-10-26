@@ -512,10 +512,12 @@ open(S0=#s {device = DeviceName, baud_rate = Speed,
 			E =:= enoent ->
 	    lager:debug("canusb:open: ~s@~w  error ~w, will try again "
 		   "in ~p msecs.", [DeviceName,Speed,E,S0#s.retry_interval]),
+	    send_state(down, S0#s.receiver),
 	    Timer = start_timer(S0#s.retry_interval, reopen),
 	    {ok, S0#s { retry_timer = Timer }};
 	Error ->
 	    lager:error("canusb:open: error ~w", [Error]),
+	    send_state(down, S0#s.receiver),
 	    Error
     end.
     
