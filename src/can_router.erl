@@ -223,6 +223,7 @@ i(Id) ->
 
 print_stat(If, Stat) ->
     io:format("~2w: ~p\n", [If#can_if.id, If#can_if.param]),
+    io:format("  state: ~p\n", [If#can_if.state]),
     lists:foreach(
       fun({Counter,Value}) ->
 	      io:format("  ~p: ~w\n", [Counter, Value])
@@ -481,6 +482,7 @@ handle_call({supervise, on, Pid} = M, _From, S=#s {supervisors = Sups}) ->
 	    {reply, ok, S};
 	false ->
 	    Mon = erlang:monitor(process, Pid),
+	    current_state(Pid, get_interface_list()),
 	    {reply, ok, S#s {supervisors = [{Pid, Mon} | Sups]}}
     end;
 
@@ -723,6 +725,12 @@ send_wakeup_if(If, Nid, S) ->
 		       <<16#80,?MSG_WAKEUP:16/little,0:8,1:32/little>>),
     gen_server:cast(If#can_if.pid, {send, Frame}),
     count(stat_out, S).
+
+current_state(_Pid, []) ->
+    ok;
+current_state(Pid, [#can_if {state = S, param = P, id = Id} | Rest]) ->
+    Pid ! {if_state_event, {Id, P}, S},
+    current_state(Pid, Rest).
 
 inform_supervisors(_Msg, []) ->
     ok;
