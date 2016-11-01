@@ -289,7 +289,7 @@ handle_call({send,Msg}, _From, S=#s {uart = Uart})
     {reply, Reply, S1};
 handle_call({send,Msg}, _From, S) ->
     if not S#s.pause ->
-	    lager:warning("Msg ~p dropped", [Msg]);
+	    lager:debug("Msg ~p dropped", [Msg]);
        true -> ok
     end,
     {reply, ok, S};
@@ -369,7 +369,7 @@ handle_cast({send,Msg}, S=#s {uart = Uart})
     {noreply, S1};
 handle_cast({send,Msg}, S) ->
     if not S#s.pause ->
-	    lager:warning("Msg ~p dropped", [Msg]);
+	    lager:debug("Msg ~p dropped", [Msg]);
        true -> ok
     end,
     {noreply, S};
