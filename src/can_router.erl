@@ -63,8 +63,9 @@
 	{
 	  pid,      %% can interface pid
 	  id,       %% interface id
+	  name,     %% name for easier identification
 	  mon,      %% can app monitor
-	  param,    %% match param normally {Mod,Name,Index} 
+	  param,    %% match param normally {Mod,Device,Index,Name}
 	  atime,    %% last input activity time
 	  state = up
 	}).
@@ -184,8 +185,8 @@ ifstatus(Id) ->
 
 ifstatus() ->
     %% For all interfaces
-    lists:foldl(fun(#can_if{pid = Pid, id = Id, param = {BE, _, _}}, Acc) ->
-			[{{BE, Id}, gen_server:call(Pid, ifstatus)} | Acc]
+    lists:foldl(fun(#can_if{pid = Pid, param = {_, _, _, Name}}, Acc) ->
+			[{{can, Name}, gen_server:call(Pid, ifstatus)} | Acc]
 		end, [], interfaces()).
    
 			       
@@ -194,13 +195,13 @@ restart(Id) ->
     case gen_server:call(?SERVER, {interface,Id}) of
 	{ok,If} ->
 	    case If#can_if.param of
-		{can_usb,_,N} ->
+		{can_usb,_,N,_} ->
 		    ok = gen_server:call(If#can_if.pid, stop),
 		    can_usb:start(N);
-		{can_udp,_,N} ->
+		{can_udp,_,N,_} ->
 		    ok = gen_server:call(If#can_if.pid, stop),
 		    can_udp:start(N-51712);
-		{can_sock,IfName,_Index} ->
+		{can_sock,IfName,_Index,_} ->
 		    ok = gen_server:call(If#can_if.pid, stop),
 		    can_sock:start(IfName)
 	    end;
@@ -260,7 +261,7 @@ detach() ->
 join(Params) ->
     gen_server:call(?SERVER, {join, self(), Params}).
 
-join(Pid, Params) ->
+join(Pid, Params) when is_pid(Pid) ->
     gen_server:call(Pid, {join, self(), Params}).
 
 add_filter(Intf, Invert, ID, Mask) when 
@@ -418,6 +419,8 @@ handle_call({interface,I}, _From, S) when is_integer(I) ->
 	If ->
 	    {reply, {ok,If}, S}
     end;
+handle_call({interface,Name}, _From, S) when is_list(Name) ->
+    {reply, get_interface_by_name(Name), S};
 handle_call({interface, {_BackEnd, _BusId} = B}, _From, S) ->
     {reply, get_interface_by_backend(B), S};
 handle_call({interface,Param}, _From, S) ->
@@ -675,6 +678,13 @@ get_interface_by_id(I) ->
 	If -> If
     end.
 	     
+get_interface_by_name(Name) ->
+    lists:foldl(fun(If=#can_if{param = {_, _, _, N}}, Acc)
+		      when N =:= Name -> [If | Acc];
+		   (_OtherIf, Acc) ->
+			Acc
+		end, [], get_interface_list()).
+
 get_interface_by_param(Param) ->
     lists:keyfind(Param, #can_if.param, get_interface_list()).
 
@@ -682,9 +692,9 @@ get_interface_by_pid(Pid) ->
     lists:keyfind(Pid, #can_if.pid, get_interface_list()).
 
 get_interface_by_backend({BackEnd, BusId}) ->
-    lists:foldl(fun(If=#can_if{param = {BE, _, BI}}, Acc) 
+    lists:foldl(fun(If=#can_if{param = {BE, _, BI, _}}, Acc)
 		      when BE =:= BackEnd, BI =:= BusId -> [If | Acc];
-		   (_OtherIf, Acc) -> 
+		   (_OtherIf, Acc) ->
 			Acc
 		end, [], get_interface_list()).
 

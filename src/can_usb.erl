@@ -59,6 +59,7 @@
 
 -record(s, 
 	{
+	  name::string(),
 	  receiver={can_router, undefined, 0} ::
 	    {Module::atom(), %% Module to join and send to
 	     Pid::pid() | undefined, %% Pid if not default server
@@ -94,12 +95,13 @@
 
 -type can_usb_option() ::
 	{device,  DeviceName::string()} |
+	{name,    IfName::string()} |
 	{baud,    DeviceBaud::integer()} |
 	{timeout, ReopenTimeout::timeout()} |
 	{bitrate, CANBitrate::integer()} |
 	{status_interval, Time::timeout()} |
 	{retry_interval, Time::timeout()} |
-	{pause, Pause::boolean()}.
+	{pause,   Pause::boolean()}.
 	
 -spec start() -> {ok,pid()} | {error,Reason::term()}.
 start() ->
@@ -197,18 +199,19 @@ disable_timestamp(Pid) ->
 	    Error
     end.
 
--spec pause(Id::integer() | pid()) -> ok | {error, Error::atom()}.
-pause(Id) when is_integer(Id); is_pid(Id) ->
+-spec pause(Id::integer() | pid() | string()) -> ok | {error, Error::atom()}.
+pause(Id) when is_integer(Id); is_pid(Id); is_list(Id) ->
     call(Id, pause).
--spec resume(Id::integer()| pid()) -> ok | {error, Error::atom()}.
-resume(Id) when is_integer(Id); is_pid(Id) ->
+-spec resume(Id::integer() | pid() | string()) -> ok | {error, Error::atom()}.
+resume(Id) when is_integer(Id); is_pid(Id); is_list(Id) ->
     call(Id, resume).
--spec ifstatus(If::integer()) -> {ok, Status::atom()} | {error, Reason::term()}.
-ifstatus(Id) when is_integer(Id); is_pid(Id) ->
+-spec ifstatus(If::integer() | pid() | string()) ->
+		      {ok, Status::atom()} | {error, Reason::term()}.
+ifstatus(Id) when is_integer(Id); is_pid(Id); is_list(Id) ->
     call(Id, ifstatus).
 
--spec dump(Id::integer()| pid()) -> ok | {error, Error::atom()}.
-dump(Id) when is_integer(Id); is_pid(Id) ->
+-spec dump(Id::integer()| pid() | string()) -> ok | {error, Error::atom()}.
+dump(Id) when is_integer(Id); is_pid(Id); is_list(Id) ->
     call(Id,dump).
 
 %%--------------------------------------------------------------------
@@ -221,24 +224,6 @@ dump(Id) when is_integer(Id); is_pid(Id) ->
 %%--------------------------------------------------------------------
 
 init([Id,Opts]) ->
-    Router = proplists:get_value(router, Opts, can_router),
-    Pid = proplists:get_value(receiver, Opts, undefined),
-    RetryInterval = proplists:get_value(retry_interval,Opts,
-					?DEFAULT_RETRY_INTERVAL),
-    Pause = proplists:get_value(pause, Opts, false),
-    BitRate = proplists:get_value(bitrate,Opts,?DEFAULT_BITRATE),
-    Interval = proplists:get_value(status_interval,Opts,
-				   ?DEFAULT_STATUS_INTERVAL),
-    Speed = case proplists:get_value(baud, Opts) of
-		undefined ->
-		    %% maybe CANUSB_SPEED_<x>
-		    case os:getenv("CANUSB_SPEED") of
-			false -> ?DEFAULT_BAUDRATE;
-			""    -> ?DEFAULT_BAUDRATE;
-			Speed0 -> list_to_integer(Speed0)
-		    end;
-		Speed1 -> Speed1
-	    end,
     Device = case proplists:get_value(device, Opts) of
 		 undefined ->
 		     %% try environment
@@ -249,10 +234,33 @@ init([Id,Opts]) ->
 	    lager:error("missing device argument"),
 	    {stop, einval};
        true ->
-	    case join(Router, Pid, {?MODULE,Device,Id}) of
+	    Name = proplists:get_value(name, Opts,
+				       atom_to_list(?MODULE) ++ "-" ++
+					   integer_to_list(Id)),
+	    Router = proplists:get_value(router, Opts, can_router),
+	    Pid = proplists:get_value(receiver, Opts, undefined),
+	    RetryInterval = proplists:get_value(retry_interval,Opts,
+						?DEFAULT_RETRY_INTERVAL),
+	    Pause = proplists:get_value(pause, Opts, false),
+	    BitRate = proplists:get_value(bitrate,Opts,?DEFAULT_BITRATE),
+	    Interval = proplists:get_value(status_interval,Opts,
+					   ?DEFAULT_STATUS_INTERVAL),
+	    Speed = case proplists:get_value(baud, Opts) of
+			undefined ->
+			    %% maybe CANUSB_SPEED_<x>
+			    case os:getenv("CANUSB_SPEED") of
+				false -> ?DEFAULT_BAUDRATE;
+				""    -> ?DEFAULT_BAUDRATE;
+				Speed0 -> list_to_integer(Speed0)
+			    end;
+			Speed1 -> Speed1
+		    end,
+
+	    case join(Router, Pid, {?MODULE,Device,Id, Name}) of
 		{ok, If} when is_integer(If) ->
 		    lager:debug("can_usb:joined: intf=~w", [If]),
-		    S = #s{ receiver={Router,Pid,If},
+		    S = #s{ name = Name,
+			    receiver={Router,Pid,If},
 			    device = Device,
 			    offset = Id,
 			    baud_rate = Speed,
@@ -980,7 +988,7 @@ error_frame(Code, ID, Intf, D0, D1, D2, D3, D4) ->
 
 call(Pid, Request) when is_pid(Pid) -> 
     gen_server:call(Pid, Request);
-call(Id, Request) when is_integer(Id) ->
+call(Id, Request) when is_integer(Id); is_list(Id) ->
     case can_router:interface_pid({?MODULE, Id})  of
 	Pid when is_pid(Pid) -> gen_server:call(Pid, Request);
 	Error -> Error

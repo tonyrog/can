@@ -44,6 +44,7 @@
 
 -record(s, 
 	{
+	  name::string(),
 	  receiver={can_router, undefined, undefined} ::
 	    {Module::atom(), %% Module to join and send to
 	     Pid::pid() | undefined,     %% Pid if not default server
@@ -74,13 +75,14 @@
 -define(DEFAULT_IF,0).
 
 -type can_udp_option() ::
+	{name,     IfName::string()} |
 	{maddr,    inet:ip_address()} |
 	{ifaddr,   inet:ip_address()} |
-	{ttl,     integer()} |
-	{timeout, ReopenTimeout::integer()} |
-	{bitrate, CANBitrate::integer()} |
+	{ttl,      integer()} |
+	{timeout,  ReopenTimeout::integer()} |
+	{bitrate,  CANBitrate::integer()} |
 	{status_interval, Time::timeout()} |
-	{pause, Pause::boolean()}.
+	{pause,    Pause::boolean()}.
 
 %%====================================================================
 %% API
@@ -134,18 +136,19 @@ stop(BusId) ->
 	    Error
     end.
 
--spec pause(Id::integer() | pid()) -> ok | {error, Error::atom()}.
-pause(Id) when is_integer(Id); is_pid(Id) ->
+-spec pause(Id::integer() | pid() | string()) -> ok | {error, Error::atom()}.
+pause(Id) when is_integer(Id); is_pid(Id); is_list(Id) ->
     call(Id, pause).
--spec resume(Id::integer()| pid()) -> ok | {error, Error::atom()}.
-resume(Id) when is_integer(Id); is_pid(Id) ->
+-spec resume(Id::integer() | pid() | string()) -> ok | {error, Error::atom()}.
+resume(Id) when is_integer(Id); is_pid(Id); is_list(Id) ->
     call(Id, resume).
--spec ifstatus(If::integer()) -> {ok, Status::atom()} | {error, Reason::term()}.
-ifstatus(Id) when is_integer(Id); is_pid(Id) ->
+-spec ifstatus(If::integer() | pid() | string()) ->
+		      {ok, Status::atom()} | {error, Reason::term()}.
+ifstatus(Id) when is_integer(Id); is_pid(Id); is_list(Id) ->
     call(Id, ifstatus).
 
--spec dump(Id::integer()| pid()) -> ok | {error, Error::atom()}.
-dump(Id) when is_integer(Id); is_pid(Id) ->
+-spec dump(Id::integer()| pid() | string()) -> ok | {error, Error::atom()}.
+dump(Id) when is_integer(Id); is_pid(Id); is_list(Id) ->
     call(Id,dump).
 
 %%====================================================================
@@ -191,12 +194,14 @@ init([BusId, Opts]) ->
 		{ifaddr,RAddr}] ++reuse_port(),
 
     MultiOpts = [{add_membership,{MAddr,LAddr}},{active,true}],
+    Name = proplists:get_value(name, Opts, atom_to_list(?MODULE) ++ "-" ++
+				   integer_to_list(BusId)),
     case gen_udp:open(0, SendOpts) of
 	{ok,Out} ->
 	    {ok,OutPort} = inet:port(Out),
 	    case catch gen_udp:open(MPort,RecvOpts++MultiOpts) of
 		{ok,In} ->
-		    case join(Router, Pid, {?MODULE,MAddr,BusId}) of
+		    case join(Router, Pid, {?MODULE,MAddr,BusId,Name}) of
 			{ok, If} when is_integer(If) ->
 			    {ok, #s{ receiver={Router,Pid,If},
 				     in=In, mport=MPort,
@@ -257,7 +262,7 @@ handle_call(pause, _From, S) ->
     {reply, ok, S#s {pause = true}};
 handle_call(resume, _From, S=#s {pause = true}) ->
     lager:debug("resume.", []),
-    {reply, {error, not_implemented_yet}, S=#s {pause = false}};
+    {reply, {error, not_implemented_yet}, S#s {pause = false}};
 handle_call(resume, _From, S=#s {pause = false}) ->
     lager:debug("resume when not paused.", []),
     {reply, ok, S};
@@ -492,7 +497,7 @@ input_frame(Frame,{Module, Pid, _If}) when is_atom(Module), is_pid(Pid) ->
 
 call(Pid, Request) when is_pid(Pid) -> 
     gen_server:call(Pid, Request);
-call(Id, Request) when is_integer(Id) ->
+call(Id, Request) when is_integer(Id); is_list(Id) ->
     case can_router:interface_pid({?MODULE, Id})  of
 	Pid when is_pid(Pid) -> gen_server:call(Pid, Request);
 	Error -> Error

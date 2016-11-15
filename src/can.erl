@@ -43,8 +43,8 @@ start() ->
 %% Pause an interface.
 %% @end
 %%--------------------------------------------------------------------
--spec pause(If::integer()) -> ok | {error, Reason::term()}.
-pause(If) when is_integer(If) ->
+-spec pause(If::integer() | string()) -> ok | {error, Reason::term()}.
+pause(If) when is_integer(If); is_list(If) ->
     can_router:pause(If).
 
 -spec pause() -> {error, Reason::term()}.
@@ -56,8 +56,8 @@ pause() ->
 %% Resume an interface.
 %% @end
 %%--------------------------------------------------------------------
--spec resume(If::integer()) -> ok | {error, Reason::term()}.
-resume(If) when is_integer(If) ->
+-spec resume(If::integer() | string()) -> ok | {error, Reason::term()}.
+resume(If) when is_integer(If); is_list(If) ->
     can_router:resume(If).
     
 -spec resume() -> {error, Reason::term()}.
@@ -69,13 +69,14 @@ resume() ->
 %% Get active status of interface.
 %% @end
 %%--------------------------------------------------------------------
--spec ifstatus(If::integer()) -> {ok, Status::atom()} | {error, Reason::term()}.
-ifstatus(If) when is_integer(If) ->
+-spec ifstatus(If::integer() | string()) ->
+		      {ok, Status::atom()} | {error, Reason::term()}.
+ifstatus(If) when is_integer(If); is_list(If) ->
     can_router:ifstatus(If).
     
 -spec ifstatus() -> {error, Reason::term()}.
 ifstatus() ->
-    {error, interface_required}.
+    {error, interface_id_required}.
 %%
 %% API for applicatins and backends to create CAN frames
 %%

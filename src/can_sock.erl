@@ -42,6 +42,7 @@
 
 -record(s,
 	{
+	  name::string(),
 	  receiver={can_router, undefined, undefined} ::
 	    {Module::atom(), %% Module to join and send to
 	     Pid::pid() | undefined,     %% Pid if not default server
@@ -54,6 +55,7 @@
 	}).	
 
 -type can_sock_option() ::
+	{name,    IfName::string()} |
 	{device,  DeviceName::string()}.
 
 -define(DEFAULT_IF,0).
@@ -109,21 +111,21 @@ stop(BusId) ->
 	    Error
     end.
 
--spec pause(Id::integer() | pid()) -> ok | {error, Error::atom()}.
-pause(Id) when is_integer(Id); is_pid(Id) ->
+-spec pause(Id::integer() | pid() | string()) -> ok | {error, Error::atom()}.
+pause(Id) when is_integer(Id); is_pid(Id); is_list(Id) ->
     call(Id, pause).
--spec resume(Id::integer()| pid()) -> ok | {error, Error::atom()}.
-resume(Id) when is_integer(Id); is_pid(Id) ->
+-spec resume(Id::integer() | pid() | string()) -> ok | {error, Error::atom()}.
+resume(Id) when is_integer(Id); is_pid(Id); is_list(Id) ->
     call(Id, resume).
--spec ifstatus(If::integer()) -> {ok, Status::atom()} | {error, Reason::term()}.
-ifstatus(Id) when is_integer(Id); is_pid(Id) ->
+-spec ifstatus(If::integer() | pid() | string()) ->
+		      {ok, Status::atom()} | {error, Reason::term()}.
+ifstatus(Id) when is_integer(Id); is_pid(Id); is_list(Id) ->
     call(Id, ifstatus).
 
--spec dump(Id::integer()| pid()) -> ok | {error, Error::atom()}.
-dump(Id) when is_integer(Id); is_pid(Id) ->
+-spec dump(Id::integer()| pid() | string()) -> ok | {error, Error::atom()}.
+dump(Id) when is_integer(Id); is_pid(Id); is_list(Id) ->
     call(Id,dump).
-
-%%====================================================================
+%====================================================================
 %% gen_server callbacks
 %%====================================================================
 
@@ -140,6 +142,8 @@ init([BusId,Opts]) ->
     Pid = proplists:get_value(receiver, Opts, undefined),
     Device = proplists:get_value(device, Opts, "can0"),
     Pause = proplists:get_value(pause, Opts, false),
+    Name = proplists:get_value(name, Opts, atom_to_list(?MODULE) ++ "-" ++
+				   integer_to_list(BusId)),
     case can_sock_drv:open() of
 	{ok,Port} ->
 	    case get_index(Port, Device) of
@@ -147,9 +151,10 @@ init([BusId,Opts]) ->
 		    case can_sock_drv:bind(Port,Index) of
 			ok ->
 			    case join(Router, Pid, 
-				      {?MODULE,Device,BusId}) of
+				      {?MODULE,Device,BusId,Name}) of
 				{ok, If} when is_integer(If) ->
-				    {ok, #s{ receiver={Router,Pid,If},
+				    {ok, #s{ name = Name,
+					     receiver={Router,Pid,If},
 					     device = Device,
 					     port = Port,
 					     intf = Index,
@@ -385,7 +390,7 @@ input_frame(Frame,{Module, Pid, _If}) when is_atom(Module), is_pid(Pid) ->
 
 call(Pid, Request) when is_pid(Pid) -> 
     gen_server:call(Pid, Request);
-call(Id, Request) when is_integer(Id) ->
+call(Id, Request) when is_integer(Id); is_list(Id) ->
     case can_router:interface_pid({?MODULE, Id})  of
 	Pid when is_pid(Pid) -> gen_server:call(Pid, Request);
 	Error -> Error
