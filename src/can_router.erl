@@ -659,7 +659,8 @@ do_send(Pid, Frame, S) ->
 add_if(Pid,Param,S) ->
     Mon = erlang:monitor(process, Pid),
     ID = S#s.if_count,
-    If = #can_if { pid=Pid, id=ID, mon=Mon, param=Param, atime = read_clock() },
+    ATime =  read_clock() + S#s.wakeup_timeout,
+    If = #can_if { pid=Pid, id=ID, mon=Mon, param=Param, atime = ATime },
     set_interface(If),
     S1 = S#s { if_count = ID+1 },
     link(Pid),
