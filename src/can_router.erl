@@ -30,7 +30,7 @@
 -export([start/0, start/1, stop/0]).
 -export([start_link/0, start_link/1]).
 -export([join/1, join/2]).
--export([attach/0, detach/0]).
+-export([attach/0, attach/1, detach/0]).
 -export([send/1, send_from/2]).
 -export([sync_send/1, sync_send_from/2]).
 -export([input/1, input/2, input_from/2]).
@@ -74,7 +74,8 @@
 	{
 	  pid,       %% can app pid
 	  mon,       %% can app monitor
-	  interface  %% interface id
+	  interface, %% interface id
+	  fs         %% can filter
 	 }).
 
 -record(s,
@@ -251,7 +252,10 @@ call_if(Id, Request) ->
 
 %% attach - simulated can bus or application
 attach() ->
-    gen_server:call(?SERVER, {attach, self()}).
+    attach([]).
+
+attach(FilterList) when is_list(FilterList) ->
+    gen_server:call(?SERVER, {attach, self(), FilterList}).
 
 %% detach the same
 detach() ->
@@ -264,9 +268,9 @@ join(Params) ->
 join(Pid, Params) when is_pid(Pid) ->
     gen_server:call(Pid, {join, self(), Params}).
 
-add_filter(Intf, Invert, ID, Mask) when 
-      is_boolean(Invert), is_integer(ID), is_integer(Mask) ->
-    gen_server:call(?SERVER, {add_filter, Intf, Invert, ID, Mask}).
+add_filter(ID, Invert, CanID, Mask) when 
+      is_boolean(Invert), is_integer(CanID), is_integer(Mask) ->
+    gen_server:call(?SERVER, {add_filter, ID, Invert, CanID, Mask}).
 
 del_filter(Intf, I) ->
     gen_server:call(?SERVER, {del_filter, Intf, I}).
@@ -369,32 +373,35 @@ handle_call({send,Pid,Frame},_From, S)
     S1 = do_send(Pid, Frame, S),
     {reply, ok, S1}; 
 
-handle_call({attach,Pid}, _From, S) when is_pid(Pid) ->
-    Apps = S#s.apps,
-    case lists:keysearch(Pid, #can_app.pid, Apps) of
+handle_call({attach,Pid,FilterList}, _From, S) when is_pid(Pid) ->
+    case find_app_by_pid(Pid,S#s.apps) of
 	false ->
 	    lager:debug("can_router: process ~p attached.",  [Pid]),
 	    Mon = erlang:monitor(process, Pid),
 	    %% We may extend app interface someday - now = 0
-	    App = #can_app { pid=Pid, mon=Mon, interface=0 },
-	    Apps1 = [App | Apps],
-	    {reply, ok, S#s { apps = Apps1 }};
-	{value,_} ->
-	    {reply, ok, S}
+	    case make_filter(FilterList) of
+		{ok,Fs,_Is} ->
+		    App = #can_app { pid=Pid, mon=Mon, interface=0, fs=Fs },
+		    Apps1 = [App | S#s.apps],
+		    {reply, ok, S#s { apps = Apps1 }};
+		Error ->
+		    {reply, Error, S}
+	    end;
+	_App ->
+	    {reply, {error,ealready}, S}
     end;
 handle_call({detach,Pid}, _From, S) when is_pid(Pid) ->
-    Apps = S#s.apps,
-    case lists:keysearch(Pid, #can_app.pid, Apps) of
+    case take_app_by_pid(Pid,S#s.apps) of
 	false ->
 	    {reply, ok, S};
-	{value,App=#can_app {}} ->
+	{value,App,Apps} ->
 	    lager:debug("can_router: process ~p detached.",  [Pid]),
 	    Mon = App#can_app.mon,
 	    erlang:demonitor(Mon),
 	    receive {'DOWN',Mon,_,_,_} -> ok
 	    after 0 -> ok
 	    end,
-	    {reply,ok,S#s { apps = Apps -- [App] }}
+	    {reply,ok,S#s { apps = Apps }}
     end;
 handle_call({join,Pid,Param}, _From, S) ->
     case get_interface_by_param(Param) of
@@ -435,24 +442,40 @@ handle_call(interfaces, _From, S) ->
 
 handle_call(applications, _From, S) ->
     {reply, S#s.apps, S};
-handle_call({add_filter,Intf,Invert,ID,Mask}, From, S) when 
-      is_integer(Intf), is_boolean(Invert), is_integer(ID), is_integer(Mask) ->
-    case get_interface_by_id(Intf) of
+
+handle_call({add_filter,ID,Invert,CanID,Mask}, From, S) when 
+      is_integer(ID), is_boolean(Invert), is_integer(CanID), is_integer(Mask) ->
+    case get_interface_by_id(ID) of
 	false ->
 	    {reply, {error, enoent}, S};
 	If ->
-	    ID1 = if Invert ->
-			  ID bor ?CAN_INV_FILTER;
+	    CanID1 = if Invert ->
+			  CanID bor ?CAN_INV_FILTER;
 		     true -> 
-			  ID
+			  CanID
 		  end,
-	    F = #can_filter { id=ID1, mask=Mask },
-	    gen_server:cast(If#can_if.pid, {add_filter,From,F}),
+	    F = #can_filter { id=CanID1, mask=Mask },
+	    gen_server:cast(If#can_if.pid,{add_filter,From,F}),
 	    {noreply, S}
     end;
+handle_call({add_filter,Pid,Invert,CanID,Mask}, _From, S) when 
+      is_pid(Pid), is_boolean(Invert), is_integer(CanID), is_integer(Mask) ->
+    case take_app_by_pid(Pid, S#s.apps) of
+	false ->
+	    {reply, {error, enoent}, S};
+	{value,App,Apps} ->
+	    case add_filters_([{Invert,CanID,Mask}], App#can_app.fs, []) of
+		{ok,Fs,[I]} ->
+		    {reply, {ok,I},
+		     S#s { apps= [App#can_app { fs=Fs}|Apps]}};
+		Error ->
+		    {reply, Error, S}
+	    end
+    end;
 
-handle_call({del_filter,Intf,I}, From, S) ->
-    case get_interface_by_id(Intf) of
+handle_call({del_filter,ID,I}, From, S) when is_integer(ID),
+					     is_integer(I) ->
+    case get_interface_by_id(ID) of
 	false ->
 	    {reply, {error, enoent}, S};
 	If ->
@@ -460,8 +483,21 @@ handle_call({del_filter,Intf,I}, From, S) ->
 	    {noreply, S}
     end;
 
-handle_call({get_filter,Intf,I}, From, S) ->
-    case get_interface_by_id(Intf) of
+handle_call({del_filter,Pid,I}, _From, S) when is_pid(Pid), is_integer(I) ->
+    case take_app_by_pid(Pid, S#s.apps) of
+	false ->
+	    {reply, {error, enoent}, S};
+	{value,App,Apps} ->
+	    case can_filter:del(I,App#can_app.fs) of
+		{true,Fs} ->
+		    {reply, ok, S#s { apps=[App#can_app { fs=Fs }|Apps]}};
+		{false,_Fs} ->
+		    {reply, {error, enoent}, S}
+	    end
+    end;
+
+handle_call({get_filter,ID,I}, From, S) when is_integer(ID), is_integer(I) ->
+    case get_interface_by_id(ID) of
 	false ->
 	    {reply, {error, enoent}, S};
 	If ->
@@ -469,13 +505,27 @@ handle_call({get_filter,Intf,I}, From, S) ->
 	    {noreply, S}
     end;
 
-handle_call({list_filter,Intf}, From, S) ->
-    case get_interface_by_id(Intf) of
+handle_call({get_filter,Pid,I}, _From, S) when is_pid(Pid), is_integer(I) ->
+    case find_app_by_pid(Pid,S#s.apps) of
+	false ->
+	    {reply, {error, enoent}, S};
+	App ->
+	    {reply, can_filter:get(I,App#can_app.fs)}
+    end;
+handle_call({list_filter,ID}, From, S) when is_integer(ID) ->
+    case get_interface_by_id(ID) of
 	false ->
 	    {reply, {error, enoent}, S};
 	If ->
 	    gen_server:cast(If#can_if.pid, {list_filter,From}),
 	    {noreply,S}
+    end;
+handle_call({list_filter,Pid}, _From, S) when is_pid(Pid) ->
+    case find_app_by_pid(Pid, S#s.apps) of
+	false ->
+	    {reply, {error, enoent}, S};
+	App ->
+	    {reply, can_filter:list(App#can_app.fs), S}
     end;
 
 handle_call({supervise, on, Pid} = M, _From, S=#s {supervisors = Sups}) ->
@@ -559,7 +609,7 @@ handle_info({if_state_event, Index, State} = _M, S) ->
     {noreply, S};
 
 handle_info({'DOWN',Ref,process,Pid,_Reason},S) ->
-    case lists:keytake(Pid, #can_app.pid, S#s.apps) of
+    case take_app_by_pid(Pid, S#s.apps) of
 	false ->
 	    case get_interface_by_pid(Pid) of
 		false ->
@@ -678,6 +728,12 @@ get_interface_by_id(I) ->
 	undefined -> false;
 	If -> If
     end.
+
+find_app_by_pid(Pid,Apps) ->
+    lists:keyfind(Pid, #can_app.pid, Apps).
+
+take_app_by_pid(Pid,Apps) ->
+    lists:keytake(Pid, #can_app.pid, Apps).
 	     
 get_interface_by_name(Name) ->
     lists:foldl(fun(If=#can_if{param = {_, _, _, N}}, Acc)
@@ -761,7 +817,10 @@ broadcast(Sender,Frame,S) ->
 
 %% send to all applications, except sender application
 broadcast_apps(Sender, Frame, [A|As], S) when A#can_app.pid =/= Sender ->
-    A#can_app.pid ! Frame,
+    case can_filter:input(Frame, A#can_app.fs) of
+	true -> A#can_app.pid ! Frame;
+	false -> ignore
+    end,
     broadcast_apps(Sender, Frame, As, S);
 broadcast_apps(Sender, Frame, [_|As], S) ->
     broadcast_apps(Sender, Frame, As, S);
@@ -776,3 +835,24 @@ broadcast_ifs(Frame, [_|Is], S) ->
     broadcast_ifs(Frame, Is, S);
 broadcast_ifs(_Frame, [], S) ->
     S.
+
+make_filter(FilterList) when is_list(FilterList) ->
+    Fs = can_filter:new(),
+    add_filters_(FilterList, Fs, []);
+make_filter(_) ->
+    {error,badarg}.
+
+add_filters_([{Invert,ID,Mask}|FilterList], Fs, Is) when
+    is_boolean(Invert), is_integer(ID), is_integer(Mask) ->
+    ID1 = if Invert ->
+		  ID bor ?CAN_INV_FILTER;
+	     true -> 
+		  ID
+	  end,
+    F = #can_filter { id=ID1, mask=Mask },
+    {I,Fs1} = can_filter:add(F,Fs),
+    add_filters_(FilterList, Fs1, [I|Is]);
+add_filters_([_|_], _Fs, _Is) ->
+    {error,badarg};
+add_filters_([], Fs, Is) ->
+    {ok,Fs,Is}.
