@@ -34,6 +34,7 @@
 -export([pause/1, resume/1, ifstatus/1]).
 
 start() ->
+    (catch error_logger:tty(false)),
     lager:start(),
     application:start(uart),
     application:start(can).
@@ -114,7 +115,7 @@ icreate(ID,Len,Intf,Data,Ts) ->
 	    erlang:error(?can_error_data_too_large);
        Len < 0; Len > 15 ->
 	    erlang:error(?can_error_length_out_of_range);
-       Len < L ->
+       ?is_not_can_id_rtr(ID), Len > L ->
 	    erlang:error(?can_error_length_out_of_range);
        true ->
 	    #can_frame { id=ID,len=Len,data=Data1,intf=Intf,ts=Ts}
@@ -153,9 +154,3 @@ send(Frame) when is_record(Frame, can_frame) ->
 %% Send a homebrew can_frame from application Pid
 send_from(Pid,Frame) when is_record(Frame, can_frame) ->
     can_router:send_from(Pid,Frame).
-
-
-
-
-
-
