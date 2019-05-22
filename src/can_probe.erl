@@ -32,6 +32,7 @@ start() ->
     start([]).
 
 start(Opts) ->
+    can:start(),
     spawn_link(?MODULE, init, [Opts]).
 
 stop(Pid) ->
@@ -99,5 +100,3 @@ print_frame(T, Frame) ->
     S = T div 1000000,
     Us = T rem 1000000,
     io:format("~w.~w: ~s\n", [S,Us,format_frame(Frame)]).
-
-    
