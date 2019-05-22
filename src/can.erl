@@ -85,11 +85,11 @@ create(ID,Data) ->
     create(ID,0,Data).
 
 create(ID,Intf,Data) ->
-    Ext = if ID > ?CAN_SFF_MASK -> true; true -> false end,
+    Ext = (ID > ?CAN_SFF_MASK),
     create(ID,erlang:iolist_size(Data),Ext,false,Intf,Data,?CAN_NO_TIMESTAMP).
 
 create(ID,Len,Intf,Data) ->
-    Ext = if ID > ?CAN_SFF_MASK -> true; true -> false end,
+    Ext = (ID > ?CAN_SFF_MASK),
     create(ID,Len,Ext,false,Intf,Data,?CAN_NO_TIMESTAMP).
 
 create(ID,Len,Ext,Rtr,Intf,Data) ->
@@ -127,8 +127,9 @@ icreate(ID,Len,Intf,Data,Ts) ->
 
 %% Simple SEND
 send(ID,Data) ->
+    Ext = (ID > ?CAN_SFF_MASK),
     Len = erlang:iolist_size(Data),
-    send(create(ID,Len,false,false,0,Data,?CAN_NO_TIMESTAMP)).
+    send(create(ID,Len,Ext,false,0,Data,?CAN_NO_TIMESTAMP)).
 
 %% Simple SEND extended frame ID format
 send_ext(ID,Data) ->
