@@ -508,7 +508,13 @@ open(S0=#s {device = DeviceName, baud_rate = Speed,
 	    ],    
     case uart:open1(DeviceName,DOpts) of
 	{ok,U} ->
-	    lager:debug("canusb:open: ~s@~w", [DeviceName,Speed]),
+	    {ok,[{device,RealDeviceName}]} = uart:getopts(U,[device]),
+	    if DeviceName =/= RealDeviceName ->
+		    lager:info("open CANUSB device ~s@~w", 
+			       [RealDeviceName, Speed]);
+	       true ->
+		    lager:debug("canusb:open: ~s@~w", [RealDeviceName,Speed])
+	    end,
 	    start_timer(Interval,status),
 	    S = S0#s { uart=U },
 	    canusb_sync(S),
