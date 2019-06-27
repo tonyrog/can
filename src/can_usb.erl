@@ -304,11 +304,23 @@ handle_call({send,Msg}, _From, S) ->
 handle_call(statistics,_From,S) ->
     {reply,{ok,can_counter:list()}, S};
 handle_call({set_bitrate,Rate}, _From, S) ->
-    case canusb_set_bitrate(S, Rate) of
-	{ok, _Reply, S1} ->
-	    {reply, ok, S1#s { can_speed=Rate}};
-	{Error,S1} ->
-	    {reply, Error, S1}
+    if S#s.uart =:= undefined ->
+	    case speed_number(Rate) of
+		error ->
+		    {reply, {error,bad_bit_rate}, S};
+		_ -> %% valid canusb speed
+		    {reply, ok, S#s { can_speed=Rate}}
+	    end;
+       true ->
+	    command_close(S),
+	    case canusb_set_bitrate(S, Rate) of
+		{ok, _Reply, S1} ->
+		    command_open(S1),
+		    {reply, ok, S1#s { can_speed=Rate}};
+		{Error,S1} ->
+		    command_open(S1),
+		    {reply, Error, S1}
+	    end
     end;
 handle_call(get_bitrate, _From, S) ->
     {reply, {ok,S#s.can_speed}, S};
@@ -638,18 +650,26 @@ canusb_sync(S) ->
     command_nop(S),
     true.
 
-canusb_set_bitrate(S, BitRate) ->
+speed_number(BitRate) ->
     case BitRate of
-	10000  -> command(S, "S0");
-	20000  -> command(S, "S1");
-	50000  -> command(S, "S2");
-	100000 -> command(S, "S3");
-	125000 -> command(S, "S4");
-	250000 -> command(S, "S5");
-	500000 -> command(S, "S6");
-	800000 -> command(S, "S7");
-	1000000 -> command(S, "S8");
-	_ -> {{error,bad_bit_rate}, S}
+	10000  -> 0;
+	20000  -> 1;
+	50000  -> 2;
+	100000 -> 3;
+	125000 -> 4;
+	250000 -> 5;
+	500000 -> 6;
+	800000 -> 7;
+	1000000 -> 8;
+	_ -> error
+    end.
+
+canusb_set_bitrate(S, BitRate) ->
+    case speed_number(BitRate) of
+	error ->
+	    {{error,bad_bit_rate}, S};
+	N ->
+	    command(S, [$S,N+$0])
     end.
 
 command_nop(S) ->
