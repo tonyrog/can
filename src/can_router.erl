@@ -31,6 +31,7 @@
 -export([start_link/0, start_link/1]).
 -export([join/1, join/2]).
 -export([attach/0, attach/1, detach/0]).
+-export([error_reception/1]).
 -export([send/1, send_from/2]).
 -export([sync_send/1, sync_send_from/2]).
 -export([input/1, input/2, input_from/2]).
@@ -75,7 +76,8 @@
 	  pid,       %% can app pid
 	  mon,       %% can app monitor
 	  interface, %% interface id
-	  fs         %% can filter
+	  fs,        %% can filter
+	 error_reception :: on | off  %% allow error frames
 	 }).
 
 -record(s,
@@ -261,6 +263,11 @@ attach(FilterList) when is_list(FilterList) ->
 detach() ->
     gen_server:call(?SERVER, {detach, self()}).
 
+%% allow application to get notified about interface errors,
+%% sent as error frames 
+error_reception(OnOff) when OnOff =:= on; OnOff =:= off ->
+    gen_server:call(?SERVER, {error_reception, self(), OnOff}).
+
 %% add an interface to the simulated can_bus (may be a real canbus)
 join(Params) ->
     gen_server:call(?SERVER, {join, self(), Params}).
@@ -402,6 +409,15 @@ handle_call({detach,Pid}, _From, S) when is_pid(Pid) ->
 	    after 0 -> ok
 	    end,
 	    {reply,ok,S#s { apps = Apps }}
+    end;
+handle_call({error_reception,Pid,OnOff}, _From, S) when is_pid(Pid) ->
+    case take_app_by_pid(Pid,S#s.apps) of
+	false ->
+	    {reply, ok, S};
+	{value,App,Apps} ->
+	    App1 = App#can_app { error_reception = OnOff },
+	    Apps1 = [App1 | Apps],
+	    {reply, ok, S#s { apps = Apps1 }}
     end;
 handle_call({join,Pid,Param}, _From, S) ->
     case get_interface_by_param(Param) of
@@ -567,9 +583,10 @@ handle_call(_Request, _From, S) ->
 %%--------------------------------------------------------------------
 handle_cast({input,Pid,Frame}, S) 
   when is_pid(Pid),is_record(Frame, can_frame) ->
-    if ?is_can_frame_err(Frame) ->  %% FIXME: send to error handler
+    if ?is_can_frame_err(Frame) ->
 	    S1 = count(stat_err, S),
-	    {noreply, S1};
+	    S2 = broadcast_error(Frame, S#s.apps, S1),
+	    {noreply, S2};
        true ->
 	    S1 = count(stat_in, S),
 	    I = Frame#can_frame.intf,
@@ -825,6 +842,17 @@ broadcast_apps(Sender, Frame, [A|As], S) when A#can_app.pid =/= Sender ->
 broadcast_apps(Sender, Frame, [_|As], S) ->
     broadcast_apps(Sender, Frame, As, S);
 broadcast_apps(_Sender, _Frame, [], S) ->
+    S.
+
+%% send errro to all applications that want one
+broadcast_error(Frame, [A|As], S) ->
+    if A#can_app.error_reception =:= on ->
+	    A#can_app.pid ! Frame;
+       true ->
+	    ignore
+    end,
+    broadcast_error(Frame, As, S);
+broadcast_error( _Frame, [], S) ->
     S.
 
 %% send to all interfaces, except the origin interface
