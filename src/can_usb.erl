@@ -86,12 +86,8 @@
 
 -define(SERVER, ?MODULE).
 
--define(COMMAND_TIMEOUT, 500).
-
--define(BITADD(Code, Bit, Name),
-	if (Code) band (Bit) =:= 0 -> [];
- 	   true  -> [(Name)]
-	end).
+-define(COMMAND_TIMEOUT, 5000).
+-define(OPEN_TIMEOUT,    10000).
 
 -type can_usb_option() ::
 	{device,  DeviceName::string()} |
@@ -471,6 +467,9 @@ handle_info({timeout,_TRef,status}, S) ->
 	    {noreply,S1};
 	{{error,Reason}, S1} ->
 	    lager:error("can_usb: status error: ~p", [Reason]),
+	    canusb_sync_close(S1),
+	    canusb_set_bitrate(S, S#s.can_speed),
+	    command_open(S1),
 	    start_timer(S1#s.status_interval,status),
 	    {noreply,S1}
     end;
@@ -517,7 +516,7 @@ open(S0=#s {device = DeviceName, baud_rate = Speed,
 	     {csize,8},{stopb,1},{parity,none},{active,true}
 	     %% {debug,debug}
 	     %% {buftm,1},{bufsz,128}
-	    ],    
+	    ],
     case uart:open1(DeviceName,DOpts) of
 	{ok,U} ->
 	    {ok,[{device,RealDeviceName}]} = uart:getopts(U,[device]),
@@ -527,11 +526,12 @@ open(S0=#s {device = DeviceName, baud_rate = Speed,
 	       true ->
 		    lager:debug("canusb:open: ~s@~w", [RealDeviceName,Speed])
 	    end,
+	    uart:flush(U, both),
 	    start_timer(Interval,status),
 	    S = S0#s { uart=U },
-	    canusb_sync(S),
-	    canusb_set_bitrate(S, BitRate),
-	    command_open(S),
+	    canusb_sync_close(S),
+	    _R1 = canusb_set_bitrate(S, BitRate),
+	    _R2 = command_open(S),
 	    send_state(up, S#s.receiver),
 	    {ok, S};
 	{error, E} when E =:= eaccess;
@@ -640,9 +640,7 @@ to_hex(_V, 0, Acc) -> Acc;
 to_hex(V, N, Acc) ->
     to_hex(V bsr 4,N-1, [ihex(V band 16#f) | Acc]).
 
-
-
-canusb_sync(S) ->
+canusb_sync_close(S) ->
     command_nop(S),
     command_nop(S),
     command_nop(S),
@@ -676,7 +674,7 @@ command_nop(S) ->
     command(S, "").
 	
 command_open(S) ->
-    command(S, "O").
+    command(S, "O", ?OPEN_TIMEOUT).
 
 command_close(S) ->
     command(S, "C").
@@ -736,6 +734,7 @@ wait_reply(S,Timeout) ->
 	    {{error,closed},reopen(S)}
 	
     after Timeout ->
+	    lager:debug("can_usb:wait_reply: timeout", []),
 	    {{error,timeout},S}
     end.
 
@@ -951,7 +950,7 @@ error_input(Code, S=#s {receiver = Receiver = {_Module, _Pid, If}, fs = Fs}) ->
     end.
 
 error_frame(Code, Intf) ->
-    error_frame(Code, Intf, 0, 0, 0, 0, 0, 0).
+    error_frame(Code, 0, Intf, 0, 0, 0, 0, 0).
 
 error_frame(Code, ID, Intf, D0, D1, D2, D3, D4) ->
     if Code =:= 0, ID =:= 0 -> false;
