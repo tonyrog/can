@@ -26,6 +26,7 @@
 -export([start/0]).
 -export([send/2, send_ext/2]).
 -export([send/1, send_from/2]).
+-export([sync_send/1, sync_send_from/2]).
 -export([create/2, create/3, create/4, create/6, create/7]).
 -export([icreate/5]).
 -export([send/5, send_from/4, send_from/6]).
@@ -152,6 +153,12 @@ send_from(Pid,ID,Len,Ext,Rtr,Data) ->
 send(Frame) when is_record(Frame, can_frame) ->
     can_router:send(Frame).
 
+sync_send(Frame) when is_record(Frame, can_frame) ->
+    can_router:sync_send(Frame).
+
 %% Send a homebrew can_frame from application Pid
 send_from(Pid,Frame) when is_record(Frame, can_frame) ->
     can_router:send_from(Pid,Frame).
+
+sync_send_from(Pid,Frame) when is_record(Frame, can_frame) ->
+    can_router:sync_send_from(Pid,Frame).

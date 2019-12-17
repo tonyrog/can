@@ -377,7 +377,7 @@ init(Args0) ->
 %%--------------------------------------------------------------------
 handle_call({send,Pid,Frame},_From, S)
   when is_pid(Pid),is_record(Frame, can_frame) ->
-    S1 = do_send(Pid, Frame, S),
+    S1 = do_send(Pid, Frame, true, S),
     {reply, ok, S1}; 
 
 handle_call({attach,Pid,FilterList}, _From, S) when is_pid(Pid) ->
@@ -594,12 +594,12 @@ handle_cast({input,Pid,Frame}, S)
 		false -> ok;
 		If -> set_interface(If#can_if { atime = read_clock() })
 	    end,
-	    S2 = broadcast(Pid, Frame, S1),
+	    S2 = broadcast(Pid, Frame, false, S1),
 	    {noreply, S2}
     end;
 handle_cast({send,Pid,Frame}, S) 
   when is_pid(Pid),is_record(Frame, can_frame) ->
-    S1 = do_send(Pid, Frame, S),
+    S1 = do_send(Pid, Frame, false, S),
     {noreply, S1};
 handle_cast(_Msg, S) ->
     {noreply, S}.
@@ -707,18 +707,18 @@ read_clock() ->
 	    Time
     end.
 
-do_send(Pid, Frame, S) ->
+do_send(Pid, Frame, Sync, S) ->
     case Frame#can_frame.intf of
 	0 ->
-	    broadcast(Pid,Frame,S);
+	    broadcast(Pid,Frame,Sync,S);
 	undefined ->
-	    broadcast(Pid,Frame,S);
+	    broadcast(Pid,Frame,Sync,S);
 	I ->
 	    case get_interface_by_id(I) of
 		false -> 
 		    S;
 		If ->
-		    send_if(If,Frame,S),
+		    send_if(If,Frame,Sync,S),
 		    S
 	    end
     end.
@@ -775,7 +775,7 @@ get_interface_by_backend({BackEnd, BusId}) ->
 get_interface_list() ->
     [If || {{interface,_},If} <- get()].
 
-send_if(If, Frame, S) ->
+send_if(If, Frame, Sync, S) ->
     Time = read_clock(),  %% time is decrementing to zero
     ActivityTime = If#can_if.atime - Time,
     S1 = if S#s.wakeup, ActivityTime >= S#s.wakeup_timeout ->
@@ -784,7 +784,11 @@ send_if(If, Frame, S) ->
 		 S
 	 end,
     S2 = count(stat_out, S1),
-    gen_server:cast(If#can_if.pid, {send, Frame}),
+    if Sync ->
+	    gen_server:call(If#can_if.pid, {send, Frame});
+       true ->
+	    gen_server:cast(If#can_if.pid, {send, Frame})
+    end,
     set_interface(If#can_if { atime = read_clock() }),
     S2.
 
@@ -826,11 +830,11 @@ inform_supervisors(Msg, [{Pid, _Mon} | Sups]) ->
 %% Broadcast a message to applications/simulated can buses
 %% and joined CAN interfaces
 %% 
-broadcast(Sender,Frame,S) ->
+broadcast(Sender,Frame,Sync,S) ->
     lager:debug([{tag, frame}],"can_router: broadcast: [~s]", 
 		[can_probe:format_frame(Frame)]),
     S1 = broadcast_apps(Sender, Frame, S#s.apps, S),
-    broadcast_ifs(Frame, get_interface_list(), S1).
+    broadcast_ifs(Frame, get_interface_list(), Sync, S1).
 
 %% send to all applications, except sender application
 broadcast_apps(Sender, Frame, [A|As], S) when A#can_app.pid =/= Sender ->
@@ -856,12 +860,13 @@ broadcast_error( _Frame, [], S) ->
     S.
 
 %% send to all interfaces, except the origin interface
-broadcast_ifs(Frame, [If|Is], S) when If#can_if.id =/= Frame#can_frame.intf ->
-    S1 = send_if(If, Frame, S),
-    broadcast_ifs(Frame, Is, S1);
-broadcast_ifs(Frame, [_|Is], S) ->
-    broadcast_ifs(Frame, Is, S);
-broadcast_ifs(_Frame, [], S) ->
+broadcast_ifs(Frame, [If|Is], Sync, S) when
+      If#can_if.id =/= Frame#can_frame.intf ->
+    S1 = send_if(If, Frame, Sync, S),
+    broadcast_ifs(Frame, Is, Sync, S1);
+broadcast_ifs(Frame, [_|Is], Sync, S) ->
+    broadcast_ifs(Frame, Is, Sync, S);
+broadcast_ifs(_Frame, [], _Sync, S) ->
     S.
 
 make_filter(FilterList) when is_list(FilterList) ->
