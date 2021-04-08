@@ -75,6 +75,11 @@ format_frame(Frame) ->
 	true ->
 	     ""
      end,
+     if ?is_can_frame_fd(Frame) ->
+	     " fd";
+	true ->
+	     ""
+     end,
      if Frame#can_frame.intf>0 ->
 	     [" intf:", io_lib:format("~w", [Frame#can_frame.intf])];
 	true ->

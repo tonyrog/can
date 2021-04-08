@@ -16,12 +16,6 @@ DTHREAD=../../dthread
 OBJS = \
      $(OBJDIR)/can_sock_drv.o
 
-DTHREAD_DRV_OBJS = \
-		 $(DTHREAD)/c_src/$(TARGET)/dlog.o \
-		 $(DTHREAD)/c_src/$(TARGET)/dlib.o \
-		 $(DTHREAD)/c_src/$(TARGET)/dterm.o \
-		 $(DTHREAD)/c_src/$(TARGET)/dthread.o
-
 LDFLAGS = -shared -fpic
 
 all : $(OBJDIR) $(PRIVDIR) $(PRIVDIR)/can_sock_drv.so
@@ -35,7 +29,7 @@ $(PRIVDIR):
 	@mkdir -p $(PRIVDIR)
 
 $(PRIVDIR)/can_sock_drv.so : $(OBJS)
-	$(CC) $(LDFLAGS) $(DTHREAD_DRV_OBJS) -o $@ $^
+	$(CC) $(LDFLAGS) -o $@ $^
 
 $(OBJDIR)/%.o: %.c
 	$(CC) -c -o $@ $(CFLAGS) $<

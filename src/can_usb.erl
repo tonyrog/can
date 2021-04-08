@@ -227,7 +227,7 @@ init([Id,Opts]) ->
 		 D -> D
 	     end,
     if Device =:= false; Device =:= "" ->
-	    lager:error("missing device argument"),
+	    ?error("missing device argument"),
 	    {stop, einval};
        true ->
 	    Name = proplists:get_value(name, Opts,
@@ -251,10 +251,14 @@ init([Id,Opts]) ->
 			    end;
 			Speed1 -> Speed1
 		    end,
-
-	    case join(Router, Pid, {?MODULE,Device,Id, Name}) of
+	    Param = #{ mod => ?MODULE,
+		       device => Device,
+		       index => Id,
+		       name => Name,
+		       fd => false },
+	    case join(Router, Pid, Param) of
 		{ok, If} when is_integer(If) ->
-		    lager:debug("can_usb:joined: intf=~w", [If]),
+		    ?debug("can_usb:joined: intf=~w", [If]),
 		    S = #s{ name = Name,
 			    receiver={Router,Pid,If},
 			    device = Device,
@@ -266,13 +270,13 @@ init([Id,Opts]) ->
 			    pause = Pause,
 			    fs=can_filter:new()
 			  },
-		    lager:info("using device ~s@~w\n", [Device, BitRate]),
+		    ?info("using device ~s@~w\n", [Device, BitRate]),
 		    case open(S) of
 			{ok, S1} -> {ok, S1};
 			Error -> {stop, Error}
 		    end;
 		{error, Reason} = E ->
-		    lager:error("Failed to join ~p(~p), reason ~p", 
+		    ?error("Failed to join ~p(~p), reason ~p", 
 				[Router, Pid, Reason]),
 		    {stop, E}
 	    end
@@ -293,7 +297,7 @@ handle_call({send,Msg}, _From, S=#s {uart = Uart})
     {reply, Reply, S1};
 handle_call({send,Msg}, _From, S) ->
     if not S#s.pause ->
-	    lager:debug("Msg ~p dropped", [Msg]);
+	    ?debug("Msg ~p dropped", [Msg]);
        true -> ok
     end,
     {reply, ok, S};
@@ -339,34 +343,34 @@ handle_call({del_filter,I}, _From, S) ->
     {reply, Reply, S#s { fs=Fs }};
 handle_call(pause, _From, S=#s {pause = false, uart = Uart}) 
   when Uart =/= undefined ->
-    lager:debug("pause.", []),
-    lager:debug("closing device ~s", [S#s.device]),
+    ?debug("pause.", []),
+    ?debug("closing device ~s", [S#s.device]),
     R = uart:close(S#s.uart),
-    lager:debug("closed ~p", [R]),
+    ?debug("closed ~p", [R]),
     {reply, ok, S#s {pause = true}};
 handle_call(pause, _From, S) ->
-    lager:debug("pause when not active.", []),
+    ?debug("pause when not active.", []),
     {reply, ok, S#s {pause = true}};
 handle_call(resume, _From, S=#s {pause = true}) ->
-    lager:debug("resume.", []),
+    ?debug("resume.", []),
     case open(S#s {pause = false}) of
 	{ok, S1} -> {reply, ok, S1};
 	Error -> {reply, Error, S}
     end;
 handle_call(resume, _From, S=#s {pause = false}) ->
-    lager:debug("resume when not paused.", []),
+    ?debug("resume when not paused.", []),
     {reply, ok, S};
 handle_call(ifstatus, _From, S=#s {pause = true}) ->
-    lager:debug("ifstatus.", []),
+    ?debug("ifstatus.", []),
     {reply, {ok, paused}, S};
 handle_call(ifstatus, _From, S=#s {uart = undefined}) ->
-    lager:debug("ifstatus.", []),
+    ?debug("ifstatus.", []),
     {reply, {ok, faulty}, S};
 handle_call(ifstatus, _From, S) ->
-    lager:debug("ifstatus.", []),
+    ?debug("ifstatus.", []),
     {reply, {ok, active}, S};
 handle_call(dump, _From, S) ->
-    lager:debug("dump.", []),
+    ?debug("dump.", []),
     {reply, {ok, S}, S};
 handle_call(stop, _From, S) ->
     {stop, normal, ok, S};
@@ -385,7 +389,7 @@ handle_cast({send,Msg}, S=#s {uart = Uart})
     {noreply, S1};
 handle_cast({send,Msg}, S) ->
     if not S#s.pause ->
-	    lager:debug("Msg ~p dropped", [Msg]);
+	    ?debug("Msg ~p dropped", [Msg]);
        true -> ok
     end,
     {noreply, S};
@@ -409,7 +413,7 @@ handle_cast({list_filter,From}, S) ->
     gen_server:reply(From, Reply),
     {noreply, S};
 handle_cast(_Mesg, S) ->
-    lager:debug("can_usb: handle_cast: ~p\n", [_Mesg]),
+    ?debug("can_usb: handle_cast: ~p\n", [_Mesg]),
     {noreply, S}.
 
 %%--------------------------------------------------------------------
@@ -420,26 +424,26 @@ handle_cast(_Mesg, S) ->
 %%--------------------------------------------------------------------
 handle_info({uart,U,Data}, S) when S#s.uart =:= U ->
     NewBuf = <<(S#s.buf)/binary, Data/binary>>,
-    lager:debug("handle_info: NewBuf=~p", [NewBuf]),
+    ?debug("handle_info: NewBuf=~p", [NewBuf]),
     {_,S1} = parse_all(S#s { buf = NewBuf}),
-    lager:debug("handle_info: RemainBuf=~p", [S1#s.buf]),
+    ?debug("handle_info: RemainBuf=~p", [S1#s.buf]),
     {noreply, S1};
 
 handle_info({uart_error,U,Reason}, S) when U =:= S#s.uart ->
     send_state(down, S#s.receiver),
     if Reason =:= enxio ->
-	    lager:error("uart error ~p device ~s unplugged?", 
+	    ?error("uart error ~p device ~s unplugged?", 
 			[Reason,S#s.device]),
 	    {noreply, reopen(S)};
        true ->
-	    lager:error("uart error ~p for device ~s", 
+	    ?error("uart error ~p for device ~s", 
 			[Reason,S#s.device]),
 	    {noreply, S}
     end;
 
 handle_info({uart_closed,U}, S) when U =:= S#s.uart ->
     send_state(down, S#s.receiver),
-    lager:error("uart device closed, will try again in ~p msecs.",
+    ?error("uart device closed, will try again in ~p msecs.",
 		[S#s.retry_interval]),
     S1 = reopen(S),
     {noreply, S1};
@@ -457,16 +461,16 @@ handle_info({timeout,_TRef,status}, S) ->
 		    {noreply,S2}
 	    catch
 		error:Reason ->
-		    lager:error("can_usb: status error: ~p", [Reason]),
+		    ?error("can_usb: status error: ~p", [Reason]),
 		    start_timer(S#s.status_interval,status),
 		    {noreply,S}
 	    end;
 	{ok, Status, S1} ->
-	    lager:error("can_usb: status error: ~p", [Status]),
+	    ?error("can_usb: status error: ~p", [Status]),
 	    start_timer(S1#s.status_interval,status),
 	    {noreply,S1};
 	{{error,Reason}, S1} ->
-	    lager:error("can_usb: status error: ~p", [Reason]),
+	    ?error("can_usb: status error: ~p", [Reason]),
 	    canusb_sync_close(S1),
 	    canusb_set_bitrate(S, S#s.can_speed),
 	    command_open(S1),
@@ -483,7 +487,7 @@ handle_info({timeout,TRef,reopen},S) when TRef =:= S#s.retry_timer ->
     end;
 
 handle_info(_Info, S) ->
-    lager:debug("can_usb: got info ~p", [_Info]),
+    ?debug("can_usb: got info ~p", [_Info]),
     {noreply, S}.
     
 %%--------------------------------------------------------------------
@@ -521,10 +525,10 @@ open(S0=#s {device = DeviceName, baud_rate = Speed,
 	{ok,U} ->
 	    {ok,[{device,RealDeviceName}]} = uart:getopts(U,[device]),
 	    if DeviceName =/= RealDeviceName ->
-		    lager:info("open CANUSB device ~s@~w", 
+		    ?info("open CANUSB device ~s@~w", 
 			       [RealDeviceName, Speed]);
 	       true ->
-		    lager:debug("canusb:open: ~s@~w", [RealDeviceName,Speed])
+		    ?debug("canusb:open: ~s@~w", [RealDeviceName,Speed])
 	    end,
 	    uart:flush(U, both),
 	    start_timer(Interval,status),
@@ -536,13 +540,13 @@ open(S0=#s {device = DeviceName, baud_rate = Speed,
 	    {ok, S};
 	{error, E} when E =:= eaccess;
 			E =:= enoent ->
-	    lager:debug("canusb:open: ~s@~w  error ~w, will try again "
+	    ?debug("canusb:open: ~s@~w  error ~w, will try again "
 		   "in ~p msecs.", [DeviceName,Speed,E,S0#s.retry_interval]),
 	    send_state(down, S0#s.receiver),
 	    Timer = start_timer(S0#s.retry_interval, reopen),
 	    {ok, S0#s { retry_timer = Timer }};
 	Error ->
-	    lager:error("canusb:open: error ~w", [Error]),
+	    ?error("canusb:open: error ~w", [Error]),
 	    send_state(down, S0#s.receiver),
 	    Error
     end.
@@ -551,10 +555,10 @@ reopen(S=#s {pause = true}) ->
     S;
 reopen(S) ->
     if S#s.uart =/= undefined ->
-	    lager:debug("closing device ~s", [S#s.device]),
+	    ?debug("closing device ~s", [S#s.device]),
 	    R = uart:close(S#s.uart),
 	    send_state(down, S#s.receiver),
-	    lager:debug("closed ~p", [R]),
+	    ?debug("closed ~p", [R]),
 	    R;
        true ->
 	    ok
@@ -570,9 +574,9 @@ start_timer(Time, Tag) ->
     erlang:start_timer(Time,self(),Tag).
 
 send_message(Mesg, S) when is_record(Mesg,can_frame) ->
-    lager:debug([{tag, frame}],"can_usb:send_message: [~s]", 
+    ?debug([{tag, frame}],"can_usb:send_message: [~s]", 
 	   [can_probe:format_frame(Mesg)]),
-    if is_binary(Mesg#can_frame.data) ->
+    if is_binary(Mesg#can_frame.data), not ?is_can_frame_fd(Mesg) ->
 	    send_bin_message(Mesg, Mesg#can_frame.data, S);
        true ->
 	    output_error(?can_error_data,S)
@@ -695,7 +699,7 @@ command(S, Command) ->
 		     {'ok',list(byte()),#s{}}.
 command(S, Command, Timeout) ->
     BCommand = iolist_to_binary([Command,$\r]),
-    lager:debug("can_usb:command: [~p]", [BCommand]),
+    ?debug("can_usb:command: [~p]", [BCommand]),
     if S#s.uart =:= undefined ->
 	    {{error,eagain},S};
        true ->
@@ -709,32 +713,32 @@ command(S, Command, Timeout) ->
 wait_reply(S,Timeout) ->
     receive
 	{uart,U,Data} when U=:=S#s.uart ->
-	    lager:debug("can_usb:data: ~p", [Data]),
+	    ?debug("can_usb:data: ~p", [Data]),
 	    Data1 = <<(S#s.buf)/binary,Data/binary>>,
 	    case parse(Data1, [], S#s{ buf=Data1 }) of
 		{more,S1} ->
 		    wait_reply(S1,Timeout);
 		{ok,Reply,S1} ->
-		    lager:debug("can_usb:wait_reply: ok", []),
+		    ?debug("can_usb:wait_reply: ok", []),
 		    {_, S2} = parse_all(S1),
 		    {ok,Reply,S2};
 		{Error,S1} ->
-		    lager:debug("can_usb:wait_reply: ~p", [Error]),
+		    ?debug("can_usb:wait_reply: ~p", [Error]),
 		    {_, S2} = parse_all(S1),
 		    {Error,S2}
 	    end;
 	{uart_error,U,enxio} when U =:= S#s.uart ->
-	    lager:error("uart error ~p device ~s unplugged?", 
+	    ?error("uart error ~p device ~s unplugged?", 
 			[enxio,S#s.device]),
 	    {{error,enxio},reopen(S)};
 	{uart_error,U,Error} when U=:=S#s.uart ->
 	    {{error,Error}, S};
 	{uart_closed,U} when U =:= S#s.uart ->
-	    lager:error("uart close will reopen", []),
+	    ?error("uart close will reopen", []),
 	    {{error,closed},reopen(S)}
 	
     after Timeout ->
-	    lager:debug("can_usb:wait_reply: timeout", []),
+	    ?debug("can_usb:wait_reply: timeout", []),
 	    {{error,timeout},S}
     end.
 
@@ -749,12 +753,12 @@ output_error(Reason,S) ->
     {{error,Reason},oerr(Reason,S)}.
 
 oerr(Reason,S) ->
-    lager:debug("can_usb:output error: ~p", [Reason]),
+    ?debug("can_usb:output error: ~p", [Reason]),
     S1 = count(output_error,S),
     count({output_error,Reason}, S1).
 
 ierr(Reason,S) ->
-    lager:debug("can_usb:input error: ~p", [Reason]),
+    ?debug("can_usb:input error: ~p", [Reason]),
     S1 = count(input_error, S),
     count({input_error,Reason}, S1).
 
@@ -767,7 +771,7 @@ parse_all(S) ->
 	    %% replies to command should? not be interleaved, check?
 	    parse_all(S1);
 	{_Error,S1} ->
-	    lager:debug("can_usb:parse_all: ~p, ~p", [_Error,S#s.buf]),
+	    ?debug("can_usb:parse_all: ~p, ~p", [_Error,S#s.buf]),
 	    parse_all(S1)
     end.
 
@@ -850,7 +854,7 @@ parse_(IDs,Len,Ext,Rtr,Ds,S) ->
 parse_message(ID,Len,Ext,Rtr,Ds,S=#s {receiver = {_Module, _Pid, If}}) ->
     case parse_data(Len,Rtr,Ds,[]) of
 	{ok,Data,Ts,More} ->
-	    try can:create(ID,Len,Ext,Rtr,If,Data,Ts) of
+	    try can:create(ID,Len,Ext,Rtr,false,If,Data,Ts) of
 		Frame ->
 		    S1 = input(Frame, S#s {buf=More}),
 		    parse(More,[],S1)
@@ -962,26 +966,26 @@ error_frame(Code, ID, Intf, D0, D1, D2, D3, D4) ->
 			  intf = Intf,
 			  ts = -1 }};
        Code band ?CANUSB_ERROR_RECV_FIFO_FULL =/= 0 ->
-	    lager:error("error, recv_fifo_full"),
+	    ?error("error, recv_fifo_full"),
 	    error_frame(Code - ?CANUSB_ERROR_RECV_FIFO_FULL, 
 			ID bor ?CAN_ERR_CRTL, Intf,
 			D0, (D1 bor ?CAN_ERR_CRTL_RX_OVERFLOW),
 			D2, D3, D4);
        Code band ?CANUSB_ERROR_SEND_FIFO_FULL =/= 0 ->
-	    lager:error("error, send_fifo_full"),
+	    ?error("error, send_fifo_full"),
 	    error_frame(Code - ?CANUSB_ERROR_SEND_FIFO_FULL, 
 			ID bor ?CAN_ERR_CRTL, Intf,
 			D0, (D1 bor ?CAN_ERR_CRTL_TX_OVERFLOW),
 			D2, D3, D4);
        Code band ?CANUSB_ERROR_WARNING =/= 0 ->
-	    lager:error("error, warning"),
+	    ?error("error, warning"),
 	    error_frame(Code - ?CANUSB_ERROR_WARNING, 
 			ID bor ?CAN_ERR_CRTL, Intf,
 			D0, D1 bor (?CAN_ERR_CRTL_RX_WARNING bor
 					?CAN_ERR_CRTL_TX_WARNING),
 			D2, D3, D4);
        Code band ?CANUSB_ERROR_DATA_OVER_RUN =/= 0 ->
-	    lager:error("error, data_over_run"),
+	    ?error("error, data_over_run"),
 	    %% FIXME: not really ?
 	    error_frame(Code - ?CANUSB_ERROR_DATA_OVER_RUN, 
 			ID bor ?CAN_ERR_CRTL, Intf,
@@ -993,19 +997,19 @@ error_frame(Code, ID, Intf, D0, D1, D2, D3, D4) ->
 			ID, Intf, D0, D1, D2, D3, D4);
 	    
        Code band ?CANUSB_ERROR_PASSIVE =/= 0 ->
-	    lager:error("error, passive"),
+	    ?error("error, passive"),
 	    error_frame(Code - ?CANUSB_ERROR_PASSIVE,
 			ID bor ?CAN_ERR_CRTL, Intf, 
 			D0, D1 bor (?CAN_ERR_CRTL_RX_PASSIVE bor
 					?CAN_ERR_CRTL_TX_PASSIVE),
 			D2, D3, D4);
        Code band ?CANUSB_ERROR_ARBITRATION_LOST =/= 0 ->
-	    lager:error("error, arbitration_lost"),
+	    ?error("error, arbitration_lost"),
 	    error_frame(Code - ?CANUSB_ERROR_ARBITRATION_LOST, 
 			ID bor ?CAN_ERR_LOSTARB, Intf,
 			D0, D1, D2, D3, D4);
        Code band ?CANUSB_ERROR_BUS =/= 0 ->
-	    lager:error("error, bus"),
+	    ?error("error, bus"),
 	    error_frame(Code - ?CANUSB_ERROR_BUS,
 			ID bor ?CAN_ERR_BUSERROR, Intf,
 			D0, D1, D2, D3, D4)

@@ -89,15 +89,19 @@ The interfaces in the environment will get under supervision.
 ### Linux ( virtual ) can driver
 
 #### load the virtual can driver
-    $ sudo modprobe vcan
 
+    $ sudo modprobe vcan
+	
 #### Create a virtual CAN network interface called 'vcan0'
+
     $ sudo ip link add dev vcan0 type vcan
      
 #### Activate a virtual CAN network interface called 'vcan0'
+
     $ sudo ifconfig vcan0 up
 
 #### Remove a (virtual) CAN network interface 'vcan0'
+
     $ sudo ip link del vcan0
 
 #### Set bitrate on interface can0 to 250000
@@ -106,9 +110,18 @@ The interfaces in the environment will get under supervision.
      $ sudo ip link set dev can0 type can bitrate 250000
      $ sudo ip link set can0 up
 
+#### Restart automatically on bus-off condition
+
+    $ sudo ip link set dev can0 type can restart-ms 100
+	
+#### Setup CAN-FD
+
+    $ sudo ip link set can0 up type can bitrate 1000000 dbitrate 2000000 fd on 	
+
 #### Create a virtual CAN network interface (vcan1)
-    $ sudo ip link add type vcan
-    
+
+	$ sudo ip link add type vcan
+
 ...
 
 #### Files

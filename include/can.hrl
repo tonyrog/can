@@ -20,6 +20,7 @@
 -ifndef(__CAN_HRL__).
 -define(__CAN_HRL__, true).
 
+-define(CAN_FD_FLAG,   16#100000000).  %% FD frame forced/requested (33 bit!)
 -define(CAN_EFF_FLAG,   16#80000000).  %% Extended frame format
 -define(CAN_RTR_FLAG,   16#40000000).  %% Request for transmission
 -define(CAN_ERR_FLAG,   16#20000000).  %% Error frame, input frame only
@@ -35,12 +36,14 @@
 
 -record(can_frame,
 	{
-	  id,          %% integer 11 | 29 bit (ide=true) + EXT_BIT|RTR_BIT
-	  len=0,       %% length of data 0..8
+	  id,          %% integer 11 | 29 bit (ide=true) + EXT_BIT|RTR_BIT|FD
+	  len=0,       %% length of data 0..8 (..64 for FD)
 	  data=(<<>>), %% binary with data bytes
 	  intf=0,      %% Input interface number
 	  ts=?CAN_NO_TIMESTAMP %% timestamp in (millisenconds)
 	}).
+
+%% note that real CAN FD lengths are 0, 8, 12, 16, 20, 24, 32, 48, 64
 
 %%
 %% Accept filter:
@@ -61,19 +64,21 @@
 	  mask
 	}).
 
--define(is_can_id_eff(ID), ((ID) band ?CAN_EFF_FLAG) =/= 0).
--define(is_can_id_sff(ID), ((ID) band ?CAN_EFF_FLAG) =:= 0).
--define(is_can_id_rtr(ID), ((ID) band ?CAN_RTR_FLAG) =/= 0).
--define(is_can_id_err(ID), ((ID) band ?CAN_ERR_FLAG) =/= 0).
+-define(is_can_id_eff(ID), (((ID) band ?CAN_EFF_FLAG) =/= 0)).
+-define(is_can_id_sff(ID), (((ID) band ?CAN_EFF_FLAG) =:= 0)).
+-define(is_can_id_rtr(ID), (((ID) band ?CAN_RTR_FLAG) =/= 0)).
+-define(is_can_id_err(ID), (((ID) band ?CAN_ERR_FLAG) =/= 0)).
+-define(is_can_id_fd(ID),  (((ID) band ?CAN_FD_FLAG) =/= 0)).
 
 -define(is_not_can_id_rtr(ID), (((ID) band ?CAN_RTR_FLAG) =:= 0)).
 -define(is_not_can_id_err(ID), (((ID) band ?CAN_ERR_FLAG) =:= 0)).
-
+-define(is_not_can_fd(ID),     (((ID) band ?CAN_FD_FLAG) =:= 0)).
 
 -define(is_can_valid_timestamp(F), ((F)#can_frame.ts > 0)).
 -define(is_can_frame_eff(F), ?is_can_id_eff((F)#can_frame.id)).
 -define(is_can_frame_rtr(F), ?is_can_id_rtr((F)#can_frame.id)).
 -define(is_can_frame_err(F), ?is_can_id_err((F)#can_frame.id)).
+-define(is_can_frame_fd(F),  ?is_can_id_fd((F)#can_frame.id)).
 
 %%
 %% The timestamp may be present from some interfaces.
@@ -173,5 +178,35 @@
 -define(CAN_ERR_TRX_CANL_SHORT_TO_CANH,16#80). %% 1000 0000
 
 %% controller specific additional information / data[5..7] 
+
+-ifdef(USE_LAGER).
+-define(start_logging(), lager:start()).
+-define(debug(F), lager:debug((F))).
+-define(debug(F,A), lager:debug((F),(A))).
+-define(debug(T,F,A), lager:debug((T),(F),(A))).
+-define(warning(F), lager:warning((F))).
+-define(warning(F,A), lager:warning((F),(A))).
+-define(error(F), lager:error((F))).
+-define(error(F,A), lager:error((F),(A))).
+-define(info(F), lager:info((F))).
+-define(info(F,A), lager:info((F),(A))).
+-else.
+-define(start_logging(), ok).
+-ifdef(DEBUG).
+-define(debug(T,F,A), io:format((F),(A))).
+-define(debug(F,A), io:format((F),(A))).
+-define(debug(F),   io:format((F))).
+-else.
+-define(debug(T,F,A), ok).
+-define(debug(F,A), ok).
+-define(debug(F),   ok).
+-endif.
+-define(warning(F), io:format((F))).
+-define(warning(F,A), io:format((F),(A))).
+-define(error(F), io:format((F))).
+-define(error(F,A), io:format((F),(A))).
+-define(info(F), io:format((F))).
+-define(info(F,A), io:format((F),(A))).
+-endif.
 
 -endif.

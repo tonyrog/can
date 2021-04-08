@@ -44,21 +44,21 @@
 
 -record(s, 
 	{
-	  name::string(),
-	  receiver={can_router, undefined, undefined} ::
-	    {Module::atom(), %% Module to join and send to
-	     Pid::pid() | undefined,     %% Pid if not default server
-	     Id::integer() | undefined}, %% Interface id
-	  in,          %% incoming udp socket
-	  out,         %% outgoing udp socket
-	  maddr,       %% multicast address
-	  ifaddr,      %% interface address (any, {192,168,1,4} ...)
-	  mport,       %% port number used
-	  oport,       %% output port number used
-	  pause = false,   %% Pause input
-	  fs           %% can_filter:new()
-	 }).
-
+	 name::string(),
+	 receiver={can_router, undefined, undefined} ::
+	   {Module::atom(), %% Module to join and send to
+	    Pid::pid() | undefined,     %% Pid if not default server
+	    Id::integer() | undefined}, %% Interface id
+	 in,          %% incoming udp socket
+	 out,         %% outgoing udp socket
+	 maddr,       %% multicast address
+	 ifaddr,      %% interface address (any, {192,168,1,4} ...)
+	 mport,       %% port number used
+	 oport,       %% output port number used
+	 pause = false,   %% Pause input
+	 fs,          %% can_filter:new()
+	 fd = false   %% FD support
+	}).
 
 %% MAC specific reuseport options
 -define(SO_REUSEPORT, 16#0200).
@@ -73,6 +73,9 @@
 -define(CAN_UDP_PORT, 51712).
 
 -define(DEFAULT_IF,0).
+
+-define(FLAG_FD,   16#0001).
+-define(FLAG_NONE, 16#0000).
 
 -type can_udp_option() ::
 	{name,     IfName::string()} |
@@ -120,9 +123,9 @@ start_link(BusId) when is_integer(BusId) ->
 -spec start_link(BusId::integer(),Opts::[can_udp_option()]) ->
 		   {ok,pid()} | {error,Reason::term()}.    
 start_link(BusId,Opts) ->
-    lager:debug("can_udp: start_link ~p ~p\n", [BusId,Opts]),
+    ?debug("can_udp: start_link ~p ~p\n", [BusId,Opts]),
     Res = gen_server:start_link(?MODULE, [BusId, Opts], []),
-    lager:debug("can_udp: res ~p\n", [Res]),
+    ?debug("can_udp: res ~p\n", [Res]),
     Res.
     
 
@@ -170,19 +173,20 @@ init([BusId, Opts]) ->
     Pid = proplists:get_value(receiver, Opts, undefined),
     MPort = ?CAN_UDP_PORT+BusId,
     Pause = proplists:get_value(pause, Opts, false),
+    FD    = proplists:get_value(fd, Opts, false),
     LAddr = if is_tuple(LAddr0) -> 
 		    LAddr0;
 	       is_list(LAddr0) ->
 		     case lookup_ip(LAddr0, inet) of
 			 {error,_} ->
-			     lager:warning("No such interface ~p",[LAddr0]),
+			     ?warning("No such interface ~p",[LAddr0]),
 			     {0,0,0,0};
 			 {ok,IP} -> IP
 		     end;
 		LAddr0 =:= any -> 
 		    {0,0,0,0};
 		true ->
-		     lager:warning("No such interface ~p",[LAddr0]),
+		     ?warning("No such interface ~p",[LAddr0]),
 		    {0,0,0,0}
 	    end,
     RAddr = ?CAN_MULTICAST_IF,
@@ -201,17 +205,23 @@ init([BusId, Opts]) ->
 	    {ok,OutPort} = inet:port(Out),
 	    case catch gen_udp:open(MPort,RecvOpts++MultiOpts) of
 		{ok,In} ->
-		    case join(Router, Pid, {?MODULE,MAddr,BusId,Name}) of
+		    Param = #{ mod=>?MODULE,
+			       device => MAddr,
+			       index => BusId,
+			       name => Name,
+			       fd => FD },
+		    case join(Router, Pid, Param) of
 			{ok, If} when is_integer(If) ->
 			    {ok, #s{ receiver={Router,Pid,If},
 				     in=In, mport=MPort,
 				     out=Out, oport=OutPort,
 				     maddr=MAddr,
 				     pause = Pause,
+				     fd=FD,
 				     fs=can_filter:new()
 				   }};
 			{error, Reason} = Error ->
-			    lager:error("Failed to join ~p(~p), reason ~p", 
+			    ?error("Failed to join ~p(~p), reason ~p", 
 					[Router, Pid, Reason]),
 			    {stop, Error}
 		    end;
@@ -258,19 +268,19 @@ handle_call(list_filter, _From, S) ->
 handle_call(pause, _From, S=#s {pause = false}) ->
     {reply, {error, not_implemented_yet}, S#s {pause = true}};
 handle_call(pause, _From, S) ->
-    lager:debug("pause when not active.", []),
+    ?debug("pause when not active.", []),
     {reply, ok, S#s {pause = true}};
 handle_call(resume, _From, S=#s {pause = true}) ->
-    lager:debug("resume.", []),
+    ?debug("resume.", []),
     {reply, {error, not_implemented_yet}, S#s {pause = false}};
 handle_call(resume, _From, S=#s {pause = false}) ->
-    lager:debug("resume when not paused.", []),
+    ?debug("resume when not paused.", []),
     {reply, ok, S};
 handle_call(ifstatus, _From, S=#s {pause = Pause}) ->
-    lager:debug("ifstatus.", []),
+    ?debug("ifstatus.", []),
     {reply, {ok, if Pause -> paused; true -> active end}, S};
 handle_call(dump, _From, S) ->
-    lager:debug("dump.", []),
+    ?debug("dump.", []),
     {reply, {ok, S}, S};
 handle_call(stop, _From, S) ->
     {stop, normal, ok, S};
@@ -307,7 +317,7 @@ handle_cast({list_filter,From}, S) ->
     gen_server:reply(From, Reply),
     {noreply, S};
 handle_cast(_Mesg, S) ->
-    lager:debug("can_udp: handle_cast: ~p\n", [_Mesg]),
+    ?debug("can_udp: handle_cast: ~p\n", [_Mesg]),
     {noreply, S}.
 
 
@@ -319,19 +329,22 @@ handle_cast(_Mesg, S) ->
 %%--------------------------------------------------------------------
 handle_info({udp,U,_Addr,Port,Data}, S) when S#s.in == U ->
     if Port =:= S#s.oport ->
-	    lager:debug("can_udp: discard ~p ~p ~p\n", [_Addr,Port,Data]),
+	    ?debug("can_udp: discard ~p ~p ~p\n", [_Addr,Port,Data]),
 	    {noreply, S};
        true->
 	    %% FIXME: add check that _Addr is a local address
 	    case Data of
- 		<<CId:32/little,FLen:32/little,CData:8/binary>> ->
-		    lager:debug("CUd=~8.16.0B, FLen=~8.16.0B, CData=~p\n",
-			 [CId,FLen,CData]),
-		    Ts = ?CAN_NO_TIMESTAMP,
-		    Len = FLen band 16#f,
-		    {noreply, input(CId,Len,CData,Ts,S)};
+ 		<<CId:32/little,Flags:16/little,FLen:16/little,CData/binary>> ->
+		    ?debug("CUd=~8.16.0B, Flags=~4.16.0B, FLen=~4.16.0B, CData=~p\n",
+			   [CId,Flags,FLen,CData]),
+		    Ts = ?CAN_NO_TIMESTAMP, %% fixme: add timestamp
+		    if Flags band ?FLAG_FD -> 
+			    {noreply,input(CId bor ?CAN_FD_FLAG,FLen,CData,Ts,S)};
+		       true ->
+			    {noreply, input(CId,FLen,CData,Ts,S)}
+		    end;
 		_ ->
-		    lager:debug("can_udp: Got ~p\n", [Data]),
+		    ?debug("can_udp: Got ~p\n", [Data]),
 		    {noreply, ierr(?can_error_corrupt,S)}
 	    end
     end;
@@ -396,7 +409,7 @@ get_family_addr([],_Family) -> {error, enoent}.
 
 
 send_message(Mesg, S) when is_record(Mesg,can_frame) ->
-    lager:debug([{tag, frame}],"can_udp:send_message: [~s]", 
+    ?debug([{tag, frame}],"can_udp:send_message: [~s]", 
 	   [can_probe:format_frame(Mesg)]),
     if is_binary(Mesg#can_frame.data) ->
 	    send_bin_message(Mesg, Mesg#can_frame.data, S);
@@ -407,37 +420,64 @@ send_message(_Mesg, S) ->
     output_error(?can_error_data,S).
 
 
-send_bin_message(Mesg, Bin, S) when byte_size(Bin) =< 8 ->
+send_bin_message(Mesg, Bin, S) ->
     send_message(Mesg#can_frame.id,
 		 Mesg#can_frame.len,
 		 Bin,
-		 S);
-send_bin_message(_Mesg, _Bin, S) ->
-    output_error(?can_error_data_too_large,S).
+		 S).
 
 send_message(ID, Len, Data, S) ->
-    Bin = 
-	case byte_size(Data) of 
-	    0 -> <<0,0,0,0,0,0,0,0>>;
-	    8 -> Data;
-	    Bsz ->
-		(<< Data/binary, 0:(8-(Bsz rem 8))/unit:8 >>)
-	end,
+    FD = ?is_can_id_fd(ID) and S#s.fd,  %% request FD and support FD
+    Len1 = if FD -> adjust_fd_len(Len);
+	      true -> Len band 16#f
+	   end,
+    Size = byte_size(Data),
+    Bin1 = pad_data(FD, Data, Size, Len1),
     %% Mask ID on output message, remove error bits and bad id bits
     ID1 = if ?is_can_id_eff(ID) ->
 		  ID band (?CAN_EFF_FLAG bor ?CAN_RTR_FLAG bor ?CAN_EFF_MASK);
 	     true ->
 		  ID band (?CAN_RTR_FLAG bor ?CAN_SFF_MASK)
 	  end,
-    Len1 = Len band 16#f,
+    Flags = if FD -> ?FLAG_FD;
+	       true -> ?FLAG_NONE
+	    end,
     case gen_udp:send(S#s.out, S#s.maddr, S#s.mport,
-		      <<ID1:32/little, Len1:32/little, Bin/binary>>) of
+		      <<ID1:32/little, 
+			Flags:16/little, Len1:16/little,
+			Bin1/binary>>) of
 	ok ->
 	    {ok,count(output_frames, S)};
 	_Error ->
-	    lager:debug("gen_udp: failure=~p\n", [_Error]),
+	    ?debug("gen_udp: failure=~p\n", [_Error]),
 	    output_error(?can_error_transmission,S)
     end.
+
+pad_data(false, _Data, 0, _Len) ->
+    <<0,0,0,0,0,0,0,0>>;
+pad_data(false, Data, Size, _Len) when Size < 8 ->
+    << Data/binary, 0:(8-Size)/unit:8 >>;
+pad_data(false, Data, 8, _Len) ->
+    Data;
+pad_data(false, <<Data:8/binary,_/binary>>, _, _Len) ->
+    Data; %% truncate if we got this far
+pad_data(true, Data, Size, Len) when Size < Len ->
+    << Data/binary, 0:(Len-Size)/unit:8 >>;
+pad_data(true, Data, _Size, _Len) ->
+    Data.
+    
+%% 0, 8, 12, 16, 20, 24, 32, 48, 64
+%%   8, 4,  4,  4,  4,  8,  16, 16
+adjust_fd_len(0) -> 0;
+adjust_fd_len(Len) when Len =< 8 -> 8;
+adjust_fd_len(Len) when Len =< 12 -> 12;
+adjust_fd_len(Len) when Len =< 16 -> 16;
+adjust_fd_len(Len) when Len =< 20 -> 20;
+adjust_fd_len(Len) when Len =< 24 -> 24;
+adjust_fd_len(Len) when Len =< 32 -> 32;
+adjust_fd_len(Len) when Len =< 48 -> 48;
+adjust_fd_len(Len) when Len =< 64 -> 64.
+
 
 count(Counter,S) ->
     can_counter:update(Counter, 1),
@@ -474,7 +514,7 @@ input(CId,Len,CData,Ts, S=#s {receiver = {_Module, _Pid, If}}) ->
 	M when is_record(M,can_frame) ->
 	    input(M, S);
 	_Other ->
-	    lager:debug("can_udp: Got ~p\n", [_Other]),
+	    ?debug("can_udp: Got ~p\n", [_Other]),
 	    S
     end.
 

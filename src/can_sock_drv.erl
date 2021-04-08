@@ -27,6 +27,8 @@
 -export([recv_own_messages/2]).
 -export([set_error_filter/2]).
 -export([set_filters/2]).
+-export([set_fd_frames/2]).
+-export([get_mtu/1]).
 
 -include("../include/can.hrl").
 -include("can_sock_drv.hrl").
@@ -35,6 +37,8 @@
 -define(CTL_ERROR,  1).
 -define(CTL_UINT32, 2).
 -define(CTL_STRING, 3).
+
+-define(BOOL(X), if ((X)=:=true) -> 1; ((X)=:=false) -> 0 end).
 
 open() ->
     Path = code:priv_dir(can),
@@ -66,32 +70,49 @@ set_filters(Port, Fs) when is_port(Port), is_list(Fs) ->
     Bytes = [<<(F#can_filter.id):32,(F#can_filter.mask):32>> || F <- Fs ],
     call(Port,?CAN_SOCK_DRV_CMD_SET_FILTER, Bytes).
 
-set_loopback(Port,Enable) when is_port(Port), is_boolean(Enable) -> 
-    Value=if Enable -> 1; true -> 0 end,
+set_loopback(Port,Enable) when is_port(Port) -> 
+    Value = ?BOOL(Enable),
     call(Port,?CAN_SOCK_DRV_CMD_SET_LOOPBACK,<<Value:8>>).
 
-recv_own_messages(Port,Enable) when is_port(Port), is_boolean(Enable) -> 
-    Value=if Enable -> 1; true -> 0 end,
+recv_own_messages(Port,Enable) when is_port(Port) ->
+    Value = ?BOOL(Enable),
     call(Port,?CAN_SOCK_DRV_CMD_RECV_OWN_MESSAGES,<<Value:8>>).
+
+set_fd_frames(Port,Enable) when is_port(Port) ->
+    Value = ?BOOL(Enable),
+    call(Port,?CAN_SOCK_DRV_CMD_SET_FD_FRAMES,<<Value:8>>).
+
+get_mtu(Port) when is_port(Port) ->
+    call(Port,?CAN_SOCK_DRV_CMD_GET_MTU,<<>>).
 
 bind(Port,Index) when is_port(Port), is_integer(Index), Index>=0 -> 
     call(Port,?CAN_SOCK_DRV_CMD_BIND, <<Index:32>>).
 
 send(Port,Index,Frame) when is_port(Port), is_integer(Index), 
 			    is_record(Frame, can_frame) ->
-    Pad  = 8-byte_size(Frame#can_frame.data),
-    Data = if Pad > 0 ->
-		   <<(Frame#can_frame.data)/binary, 0:Pad/unit:8>>;
-	      Pad =:= 0 ->
-		   Frame#can_frame.data
-	   end,
-    call(Port, ?CAN_SOCK_DRV_CMD_SEND,
+%%    N = byte_size(Frame#can_frame.data),
+%%    M = if N>8 -> 64; true -> 8 end,
+%%    Pad = if N > 8 -> M-N;
+%%	     true -> M-N
+%%	  end,
+%%    Data = if Pad > 0 ->
+%%		   <<(Frame#can_frame.data)/binary, 0:Pad/unit:8>>;
+%%	      Pad =:= 0 ->
+%%		   Frame#can_frame.data
+%%	   end,
+    Cmd = if ?is_can_frame_fd(Frame) ->
+		  ?CAN_SOCK_DRV_CMD_SEND_FD;
+	     true ->
+		   ?CAN_SOCK_DRV_CMD_SEND
+	  end,
+    call(Port, Cmd,
 	 <<Index:32,
 	   (Frame#can_frame.id):32,
-	   (Frame#can_frame.len):8,
-	   Data:8/binary,
 	   (Frame#can_frame.intf):32,
-	   (Frame#can_frame.ts):32>>).
+	   (Frame#can_frame.ts):32,
+	   (Frame#can_frame.len):8,
+	   (Frame#can_frame.data)/binary>>).
+
 
 call(Port, Cmd, Args) ->
     R = erlang:port_control(Port, Cmd, Args),

@@ -54,8 +54,46 @@
 #define CTL_UINT32 2
 #define CTL_STRING 3
 
-#include "dthread/include/dthread.h"
-#include "dthread/include/dlog.h"
+#include "erl_driver.h"
+
+#define LOG_DEBUG     7
+#define LOG_INFO      6
+#define LOG_NOTICE    5
+#define LOG_WARNING   4
+#define LOG_ERROR     3
+#define LOG_CRITICAL  2
+#define LOG_ALERT     1
+#define LOG_EMERGENCY 0
+#define LOG_NONE     -1
+
+#ifndef LOG_DEFAULT
+#define LOG_DEFAULT LOG_DEBUG // LOG_NONE
+#endif
+
+#define LOG(level,file,line,args...) do { \
+	if (((level) == LOG_EMERGENCY) ||				\
+	    ((debug_level >= 0) && ((level) <= debug_level))) {		\
+	    emit_error((level),(file),(line),args);			\
+	}								\
+    } while(0)
+	
+#define DEBUGF(args...) LOG(LOG_DEBUG,__FILE__,__LINE__,args)
+
+
+// Hack to handle R15 driver used with pre R15 driver
+#if ERL_DRV_EXTENDED_MAJOR_VERSION == 1
+typedef int  ErlDrvSizeT;
+typedef int  ErlDrvSSizeT;
+#endif
+
+#if (ERL_DRV_EXTENDED_MAJOR_VERSION > 2) || ((ERL_DRV_EXTENDED_MAJOR_VERSION == 2) && (ERL_DRV_EXTENDED_MINOR_VERSION >= 1))
+#define OUTPUT_TERM(thr, message, len) erl_drv_output_term((thr)->dport,(message),(len))
+#define SEND_TERM(thr, to, message, len) erl_drv_send_term((thr)->dport,(to),(message),(len))
+
+#else
+#define OUTPUT_TERM(thr, message, len) driver_output_term((thr)->port,(message),(len))
+#define SEND_TERM(thr, to, message, len) driver_send_term((thr)->port,(to),(message),(len))
+#endif
 
 typedef struct _drv_ctx_t
 {
@@ -64,13 +102,18 @@ typedef struct _drv_ctx_t
     ErlDrvTermData owner;       // owner process pid 
     ErlDrvEvent    sock;        // Can socket
     int   intf;                 // bound interface index
+    int   mtu;                  // can MTU
+    int   fdon;                 // fd is on
 } drv_ctx_t;
+
+#define CAN_FD_FLAG 0x0001
 
 // Push can frame if device is busy
 typedef struct _x_can_frame
 {
     int i;
-    struct can_frame f;
+    int flags;
+    struct canfd_frame f;
 } x_can_frame;
 
 #define CAN_SOCK_DRV_CMD_IFNAME 1
@@ -81,8 +124,35 @@ typedef struct _x_can_frame
 #define CAN_SOCK_DRV_CMD_BIND 6
 #define CAN_SOCK_DRV_CMD_SEND 7
 #define CAN_SOCK_DRV_CMD_SET_FILTER 8
+#define CAN_SOCK_DRV_CMD_SET_FD_FRAMES 9
+#define CAN_SOCK_DRV_CMD_GET_MTU 10
+#define CAN_SOCK_DRV_CMD_SEND_FD 11
 
 #define MAX_FILTER 256  // fixme
+
+#define INT_EVENT(e) ((int)((long)(e)))
+
+static int debug_level = LOG_NONE;
+    
+static void emit_error(int level, char* file, int line, ...);
+
+static void emit_error(int level, char* file, int line, ...)
+{
+    va_list ap;
+    char* fmt;
+
+    if ((level == LOG_EMERGENCY) ||
+ 	((debug_level >= 0) && (level <= debug_level))) {
+	int save_errno = errno;
+	va_start(ap, line);
+	fmt = va_arg(ap, char*);
+	fprintf(stderr, "%s:%d: ", file, line); 
+	vfprintf(stderr, fmt, ap);
+	fprintf(stderr, "\r\n");
+	va_end(ap);
+	errno = save_errno;
+    }
+}
 
 static inline uint32_t get_uint32(char* ptr)
 {
@@ -135,6 +205,7 @@ static ErlDrvEntry can_sock_drv_entry;
 static ErlDrvTermData am_ok;
 static ErlDrvTermData am_error;
 static ErlDrvTermData am_can_frame;
+static ErlDrvTermData am_canfd_frame;
 static ErlDrvTermData am_data;
 
 /* general control reply function */
@@ -178,24 +249,22 @@ static ErlDrvSSizeT ctl_reply_u32(uint32_t v, char** rbuf, ErlDrvSizeT rsize)
 
 static int can_sock_drv_init(void)
 {
-    dlog_init();
-    dlog_set_debug(DLOG_DEFAULT);
+    debug_level = LOG_DEFAULT;
     DEBUGF("can_sock_drv_init");
-    dthread_lib_init();
 
     INIT_ATOM(ok);
     INIT_ATOM(error);
     INIT_ATOM(can_frame);
+    INIT_ATOM(canfd_frame);
     INIT_ATOM(data);
 
-    dlog_set_debug(DLOG_DEFAULT);
+    debug_level = LOG_DEFAULT;
     return 0;
 }
 
 static void can_sock_drv_finish(void)
 {
     // cleanup global stuff!
-    dthread_lib_finish();
 }
 
 static ErlDrvData can_sock_drv_start(ErlDrvPort port, char* command)
@@ -204,20 +273,20 @@ static ErlDrvData can_sock_drv_start(ErlDrvPort port, char* command)
     drv_ctx_t* ctx = NULL;
     int s;
 
-    INFOF("memory allocated: %ld", dlib_allocated());
-    INFOF("total memory allocated: %ld", dlib_total_allocated());
-
     if ((s = socket(PF_CAN, SOCK_RAW, CAN_RAW)) < 0)
 	return ERL_DRV_ERROR_ERRNO;
 
     set_port_control_flags(port, PORT_CONTROL_FLAG_BINARY);
 
-    ctx = DZALLOC(sizeof(drv_ctx_t));
+    ctx = driver_alloc(sizeof(drv_ctx_t));
+    memset(ctx, 0, sizeof(drv_ctx_t));
     ctx->port = port;
     ctx->dport = driver_mk_port(port);
     ctx->owner = driver_connected(port);
-    ctx->intf = 0;
     ctx->sock = (ErlDrvEvent)((long)s);
+    ctx->intf = 0;
+    ctx->mtu  = CAN_MTU;
+    ctx->fdon = 0;
     return (ErlDrvData) ctx;
 }
 
@@ -227,22 +296,22 @@ static void can_sock_drv_stop(ErlDrvData d)
 
     DEBUGF("can_sock_drv_stop: called");
     driver_select(ctx->port,ctx->sock,ERL_DRV_USE,0);
-    DFREE(ctx);
-    INFOF("memory allocated: %ld", dlib_allocated());
-    INFOF("total memory allocated: %ld", dlib_total_allocated());
+    driver_free(ctx);
 }
 
 static int send_frame(drv_ctx_t* ctx, x_can_frame* frame)
 {
+    int len = CAN_MTU;
+
+    if ((frame->flags & CAN_FD_FLAG) && ctx->fdon)
+	len = ctx->mtu;
     if (frame->i == 0)
-	return write(DTHREAD_EVENT(ctx->sock),
-		     &frame->f, sizeof(struct can_frame));
+	return write(INT_EVENT(ctx->sock), &frame->f, len);
     else {
 	struct sockaddr_can addr;
 	addr.can_ifindex = frame->i;
 	addr.can_family = AF_CAN;
-	return sendto(DTHREAD_EVENT(ctx->sock),
-		      &frame->f, sizeof(struct can_frame),
+	return sendto(INT_EVENT(ctx->sock), &frame->f, len,
 		      0, (struct sockaddr*)&addr, sizeof(addr));
     }
 }    
@@ -257,7 +326,10 @@ static char* format_command(int cmd)
     case CAN_SOCK_DRV_CMD_RECV_OWN_MESSAGES: return "revc_own_messages";
     case CAN_SOCK_DRV_CMD_BIND:  return "bind";
     case CAN_SOCK_DRV_CMD_SEND:  return "send";
+    case CAN_SOCK_DRV_CMD_SEND_FD:  return "sendfd";
     case CAN_SOCK_DRV_CMD_SET_FILTER: return "set_filter";
+    case CAN_SOCK_DRV_CMD_SET_FD_FRAMES: return "set_fd_frames";
+    case CAN_SOCK_DRV_CMD_GET_MTU: return "get_mtu";
     default: return "????";
     }
 }
@@ -283,7 +355,7 @@ static ErlDrvSSizeT can_sock_drv_ctl(ErlDrvData d,
 	    return ctl_reply_error(EINVAL, rbuf, rsize);
 	else {
 	    ifr.ifr_ifindex = index;
-	    if (ioctl(DTHREAD_EVENT(ctx->sock), SIOCGIFNAME, &ifr) < 0)
+	    if (ioctl(INT_EVENT(ctx->sock), SIOCGIFNAME, &ifr) < 0)
 		return ctl_reply_error(errno, rbuf, rsize);
 	    else 
 		return ctl_reply(CTL_STRING,ifr.ifr_name, strlen(ifr.ifr_name),
@@ -300,7 +372,7 @@ static ErlDrvSSizeT can_sock_drv_ctl(ErlDrvData d,
 	    return ctl_reply_error(EINVAL, rbuf, rsize);
 	memcpy(ifr.ifr_name, buf, len);
 	ifr.ifr_name[len] = '\0';
-	if (ioctl(DTHREAD_EVENT(ctx->sock), SIOCGIFINDEX, &ifr) < 0)
+	if (ioctl(INT_EVENT(ctx->sock), SIOCGIFINDEX, &ifr) < 0)
 	    return ctl_reply_error(errno, rbuf, rsize);
 	else
 	    return ctl_reply_u32(ifr.ifr_ifindex, rbuf, rsize);
@@ -313,7 +385,7 @@ static ErlDrvSSizeT can_sock_drv_ctl(ErlDrvData d,
 	if (len != 4)
 	    return ctl_reply_error(EINVAL, rbuf, rsize);
 	m = (can_err_mask_t) get_uint32(buf);
-	r = setsockopt(DTHREAD_EVENT(ctx->sock),
+	r = setsockopt(INT_EVENT(ctx->sock),
 		       SOL_CAN_RAW,CAN_RAW_ERR_FILTER,&m,sizeof(m));
 	if (r < 0)
 	    return ctl_reply_error(errno, rbuf, rsize);
@@ -337,7 +409,7 @@ static ErlDrvSSizeT can_sock_drv_ctl(ErlDrvData d,
 	    rfilter[i].can_mask = get_uint32(ptr+4);
 	    ptr += 8;
 	}
-	r = setsockopt(DTHREAD_EVENT(ctx->sock),
+	r = setsockopt(INT_EVENT(ctx->sock),
 		       SOL_CAN_RAW,CAN_RAW_FILTER,&rfilter,len);
 	if (r < 0)
 	    return ctl_reply_error(errno, rbuf, rsize);
@@ -351,8 +423,8 @@ static ErlDrvSSizeT can_sock_drv_ctl(ErlDrvData d,
 
 	if (len != 1)
 	    return ctl_reply_error(EINVAL, rbuf, rsize);
-	value = buf[0];
-	r=setsockopt(DTHREAD_EVENT(ctx->sock),
+	value = (buf[0] != 0);
+	r=setsockopt(INT_EVENT(ctx->sock),
 		     SOL_CAN_RAW,CAN_RAW_LOOPBACK,&value,sizeof(value));
 	if (r < 0)
 	    return ctl_reply_error(errno, rbuf, rsize);
@@ -360,13 +432,28 @@ static ErlDrvSSizeT can_sock_drv_ctl(ErlDrvData d,
 	    return ctl_reply_ok(rbuf, rsize);
     }
 
+    case CAN_SOCK_DRV_CMD_SET_FD_FRAMES: {
+	int value;
+	int r;
+
+	if (len != 1)
+	    return ctl_reply_error(EINVAL, rbuf, rsize);
+	value = (buf[0] != 0);
+	r=setsockopt(INT_EVENT(ctx->sock),
+		     SOL_CAN_RAW,CAN_RAW_FD_FRAMES,&value,sizeof(value));
+	if (r < 0)
+	    return ctl_reply_error(errno, rbuf, rsize);
+	ctx->fdon = value;
+	return ctl_reply_ok(rbuf, rsize);
+    }	
+
     case CAN_SOCK_DRV_CMD_RECV_OWN_MESSAGES: {
 	int value; 
 	int r;
 	if (len != 1)
 	    return ctl_reply_error(EINVAL, rbuf, rsize);
-	value = buf[0];
-	r=setsockopt(DTHREAD_EVENT(ctx->sock),
+	value = (buf[0] != 0);
+	r=setsockopt(INT_EVENT(ctx->sock),
 		     SOL_CAN_RAW,CAN_RAW_RECV_OWN_MSGS,
 		     &value,sizeof(value));
 	if (r < 0)
@@ -378,50 +465,57 @@ static ErlDrvSSizeT can_sock_drv_ctl(ErlDrvData d,
     case CAN_SOCK_DRV_CMD_BIND: {
 	int index;
 	struct sockaddr_can addr;
-
+	struct ifreq ifreq;
+	
 	if (len != 4)
 	    return ctl_reply_error(EINVAL, rbuf, rsize);
 	if ((index = (int) get_uint32(buf)) <= 0)
 	    return ctl_reply_error(EINVAL, rbuf, rsize);
 	addr.can_family = AF_CAN;
 	addr.can_ifindex = index;
-	if (bind(DTHREAD_EVENT(ctx->sock),
+	if (bind(INT_EVENT(ctx->sock),
 		 (struct sockaddr *)&addr, sizeof(addr)) < 0)
 	    return ctl_reply_error(errno, rbuf, rsize);
-	else {
-	    driver_select(ctx->port,ctx->sock,ERL_DRV_READ,1);
-	    ctx->intf = index;
-	    return ctl_reply_ok(rbuf, rsize);
+	ctx->intf = index;
+	if (ioctl(INT_EVENT(ctx->sock), SIOCGIFMTU, (char *)&ifreq) >= 0) {
+	    ctx->mtu = ifreq.ifr_mtu;
+	    DEBUGF("detected MTU size = %d", ctx->mtu);
 	}
+	driver_select(ctx->port,ctx->sock,ERL_DRV_READ,1);
+	return ctl_reply_ok(rbuf, rsize);
     }
 
+    case CAN_SOCK_DRV_CMD_SEND_FD:
     case CAN_SOCK_DRV_CMD_SEND: {
 	int       index;
 	uint32_t  id;
 	uint8_t   flen;
 	char*     fptr;
-	// int       intf;
-	// int       ts;
+	//int     intf;
+	//int     ts;
+        int       m;
 	x_can_frame xframe;
 
-	if (len != 25)
+	if ((m = (len - 17)) < 0)
 	    return ctl_reply_error(EINVAL, rbuf, rsize);
+//	if ((m != 8) && (m != 64))
+//	    return ctl_reply_error(EINVAL, rbuf, rsize);
 	index = (int) get_uint32(buf);
 	id    = get_uint32(buf+4);
-	flen   = get_uint8(buf+8);
-	fptr   = buf+9;  // this are is always 8 bytes!
-	// intf  = (int) get_uint32(buf+17);
-	// ts    = (int) get_uint32(buf+21);
+	// intf  = (int) get_uint32(buf+8);
+	// ts    = (int) get_uint32(buf+12);	
+	flen   = get_uint8(buf+16);
+	fptr   = buf+17;
 	
-	if (flen > 8)
-	    return ctl_reply_error(EINVAL, rbuf, rsize);
-	else if ((index == 0) && (ctx->intf == 0))
+	if ((index == 0) && (ctx->intf == 0))
 	    return ctl_reply_error(ENOTCONN, rbuf, rsize);
 	else {
+	    memset(&xframe.f, 0, sizeof(xframe.f));
 	    xframe.i = index;
+	    xframe.flags = (cmd==CAN_SOCK_DRV_CMD_SEND_FD) ? CAN_FD_FLAG : 0;
 	    xframe.f.can_id = id;
-	    xframe.f.can_dlc = flen & 0xF;
-	    memcpy(xframe.f.data, fptr, 8);
+	    xframe.f.len = flen;
+	    memcpy(xframe.f.data, fptr, m);
 	    
 	    // FIXME: drop packets when full! (deq old, enq new)
 	    if (driver_sizeq(ctx->port) == 0) {
@@ -440,6 +534,10 @@ static ErlDrvSSizeT can_sock_drv_ctl(ErlDrvData d,
 	    return ctl_reply_ok(rbuf, rsize);
 	}
     }
+    case CAN_SOCK_DRV_CMD_GET_MTU: {
+	return ctl_reply_u32(ctx->mtu, rbuf, rsize);
+    }
+	
     default:
 	return ctl_reply_error(EINVAL, rbuf, rsize);
     }
@@ -457,45 +555,36 @@ static void can_sock_drv_ready_input(ErlDrvData d, ErlDrvEvent e)
 {
     (void) e;
     drv_ctx_t* ctx = (drv_ctx_t*) d;
-    DEBUGF("can_sock_drv: ready_input called");
     struct sockaddr_can addr;
-    struct can_frame frame;
+    struct canfd_frame frame;
     socklen_t len = sizeof(addr);
+    int n;
 
-    if (recvfrom(DTHREAD_EVENT(ctx->sock), &frame, sizeof(frame),
-		 0, (struct sockaddr*) &addr, &len) == sizeof(frame)) {
-	dterm_t t;
-	dterm_mark_t m1;
-	dterm_mark_t m2;
-	dterm_mark_t m3;
+    DEBUGF("can_sock_drv: ready_input called");
 
-	dterm_init(&t);
-
-	DEBUGF("can_sock_drv: ready_input got frame");
+    n = recvfrom(INT_EVENT(ctx->sock), &frame, sizeof(frame), 0,
+		 (struct sockaddr*) &addr, &len);
+    if ((n == CAN_MTU) || (n == CANFD_MTU)) {
+	ErlDrvTermData frame_type = (n == CANFD_MTU) ?
+	    ATOM(canfd_frame) : ATOM(can_frame);
+	DEBUGF("can_sock_drv: ready_input got %sframe",
+	       (n == CANFD_MTU) ? "FD " : "");
 	// Format as: {Port,{data,#can_frame{}}}
-	dterm_tuple_begin(&t, &m1); {
-	    dterm_port(&t, ctx->dport);
-	    dterm_tuple_begin(&t, &m2); {
-		dterm_atom(&t, ATOM(data));
-		dterm_tuple_begin(&t, &m3); {
-		    dterm_atom(&t, ATOM(can_frame));
-		    dterm_uint(&t, frame.can_id);
-		    dterm_uint(&t, frame.can_dlc);
-		    // check rtr?
-		    dterm_buf_binary(&t, (char*) frame.data,
-				     (frame.can_dlc & 0xf));
-		    dterm_int(&t,  addr.can_ifindex);
-		    // fixme timestamp, if requested 
-		    dterm_int(&t, -1);
-		}
-		dterm_tuple_end(&t, &m3);
-	    }
-	    dterm_tuple_end(&t, &m2);
-	}
-	dterm_tuple_end(&t, &m1);
-	// dterm_dump(stderr, dterm_data(&t), dterm_used_size(&t));
-	DOUTPUT_TERM(ctx, dterm_data(&t), dterm_used_size(&t));
-	dterm_finish(&t);
+	ErlDrvTermData spec[] = {
+	    ERL_DRV_PORT, ctx->dport,
+	      ERL_DRV_ATOM, ATOM(data),
+	      // #can_frame{} | #canfd_frame{}
+	          ERL_DRV_ATOM, frame_type,
+	          ERL_DRV_UINT, frame.can_id,
+	          ERL_DRV_UINT, frame.len, // can_dlc,
+	          ERL_DRV_BUF2BINARY, (ErlDrvTermData)frame.data, frame.len,
+	          ERL_DRV_INT, addr.can_ifindex,
+	          ERL_DRV_INT, -1,  // fixme timestamp, if requested 
+	       ERL_DRV_TUPLE, 6,
+            ERL_DRV_TUPLE, 2,
+	ERL_DRV_TUPLE, 2};
+
+	OUTPUT_TERM(ctx, spec, sizeof(spec) / sizeof(spec[0]));
     }
 }
 
@@ -516,10 +605,12 @@ static void can_sock_drv_ready_output(ErlDrvData d, ErlDrvEvent e)
 	r = send_frame(ctx, &xframe);
 	if ((r < 0) && (errno == EAGAIN))
 	    return;
-	if (r < (int)sizeof(xframe))
+	if (r < ctx->mtu) {
+	    DEBUGF("send frame did not send full MTU");
 	    return;
+	}
 	driver_deq(ctx->port, sizeof(xframe));
-	n -= r;
+	n -= sizeof(xframe);
     }
     if (n == 0)
 	driver_select(ctx->port,ctx->sock,ERL_DRV_WRITE,0);
@@ -535,8 +626,8 @@ static void can_sock_drv_timeout(ErlDrvData d)
 static void can_sock_drv_stop_select(ErlDrvEvent event, void* arg)
 {
     (void) arg;
-    DEBUGF("can_sock_drv: stop_select event=%d", DTHREAD_EVENT(event));
-    DTHREAD_CLOSE_EVENT(event);
+    DEBUGF("can_sock_drv: stop_select event=%d", INT_EVENT(event));
+    close(INT_EVENT(event));
 }
 
 

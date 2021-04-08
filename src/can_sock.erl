@@ -144,14 +144,20 @@ init([BusId,Opts]) ->
     Pause = proplists:get_value(pause, Opts, false),
     Name = proplists:get_value(name, Opts, atom_to_list(?MODULE) ++ "-" ++
 				   integer_to_list(BusId)),
+    FD = proplists:get_value(fd, Opts, false),
     case can_sock_drv:open() of
 	{ok,Port} ->
 	    case get_index(Port, Device) of
 		{ok,Index} ->
 		    case can_sock_drv:bind(Port,Index) of
 			ok ->
-			    case join(Router, Pid, 
-				      {?MODULE,Device,BusId,Name}) of
+			    FD = set_fd(Port,FD),
+			    Param = #{ mod=>?MODULE,
+				       device => Device,
+				       index => BusId,
+				       name => Name,
+				       fd => FD },
+			    case join(Router, Pid, Param) of
 				{ok, If} when is_integer(If) ->
 				    {ok, #s{ name = Name,
 					     receiver={Router,Pid,If},
@@ -162,7 +168,7 @@ init([BusId,Opts]) ->
 					     fs=can_filter:new()
 					   }};
 				{error, Reason} = Error ->
-				    lager:error("Failed to join ~p(~p), "
+				    ?error("Failed to join ~p(~p), "
 						"reason ~p", [Router, 
 							      Pid, 
 							      Reason]),
@@ -178,6 +184,16 @@ init([BusId,Opts]) ->
 	    {stop, Error}
     end.
 
+set_fd(Port,FD) ->
+    {ok,Mtu} = can_sock_drv:get_mtu(Port),
+    ?debug("can_sock mtu=~w\n", [Mtu]),
+    if Mtu =:= 72 ->
+	    can_sock_drv:set_fd_frames(Port, FD),
+	    FD;
+       Mtu =:= 16 -> 
+	    false
+    end.
+    
 %%--------------------------------------------------------------------
 %% Function: %% handle_call(Request, From, State) -> {reply, Reply, State} |
 %%                                      {reply, Reply, State, Timeout} |
@@ -217,19 +233,19 @@ handle_call(list_filter, _From, S) ->
 handle_call(pause, _From, S=#s {pause = false}) ->
     {reply, {error, not_implemented_yet}, S#s {pause = true}};
 handle_call(pause, _From, S) ->
-    lager:debug("pause when not active.", []),
+    ?debug("pause when not active.", []),
     {reply, ok, S#s {pause = true}};
 handle_call(resume, _From, S=#s {pause = true}) ->
-    lager:debug("resume.", []),
+    ?debug("resume.", []),
     {reply, {error, not_implemented_yet}, S#s {pause = false}};
 handle_call(resume, _From, S=#s {pause = false}) ->
-    lager:debug("resume when not paused.", []),
+    ?debug("resume when not paused.", []),
     {reply, ok, S};
 handle_call(ifstatus, _From, S=#s {pause = Pause}) ->
-    lager:debug("ifstatus.", []),
+    ?debug("ifstatus.", []),
     {reply, {ok, if Pause -> paused; true -> active end}, S};
 handle_call(dump, _From, S) ->
-    lager:debug("dump.", []),
+    ?debug("dump.", []),
     {reply, {ok, S}, S};
 handle_call(stop, _From, S) ->
     {stop, normal, ok, S};
@@ -270,7 +286,7 @@ handle_cast({list_filter,From}, S) ->
     gen_server:reply(From, Reply),
     {noreply, S};
 handle_cast(_Mesg, S) ->
-    lager:debug("can_sock: handle_cast: ~p\n", [_Mesg]),
+    ?debug("can_sock: handle_cast: ~p\n", [_Mesg]),
     {noreply, S}.
 
 %%--------------------------------------------------------------------
@@ -280,12 +296,22 @@ handle_cast(_Mesg, S) ->
 %% Description: Handling all non call/cast messages
 %%--------------------------------------------------------------------
 handle_info({Port,{data,Frame}}, S=#s {receiver = {_Router, _Pid, If}}) 
-  when is_record(Frame,can_frame), Port =:= S#s.port ->
-    %% FIXME: add sub-interface ...
+  when element(1,Frame) =:= can_frame, Port =:= S#s.port ->
     S1 = input(Frame#can_frame{intf=If}, S),
     {noreply, S1};
+handle_info({Port,{data,Frame}}, S=#s {receiver = {_Router, _Pid, If}}) 
+  when element(1,Frame) =:= canfd_frame, Port =:= S#s.port ->
+    FdFrame = #can_frame {
+		 id = element(2, Frame) + ?CAN_FD_FLAG,
+		 len = element(3, Frame),
+		 data = element(4, Frame),
+		 intf = If,
+		 ts = element(6, Frame) },
+    S1 = input(FdFrame, S),
+    {noreply, S1};
+
 handle_info(_Info, S) ->
-    lager:debug("can_sock: got message=~p\n", [_Info]),
+    ?debug("can_sock: got message=~p\n", [_Info]),
     {noreply, S}.
 
 %%--------------------------------------------------------------------
@@ -313,17 +339,15 @@ get_index(_Port, "any") -> {ok, 0};
 get_index(Port,IfName) -> can_sock_drv:ifindex(Port,IfName).
 
 
+send_message(Mesg, S) when is_record(Mesg,can_frame), S#s.intf =:= 0 ->
+    {ok,S};
 send_message(Mesg, S) when is_record(Mesg,can_frame) ->
-    if S#s.intf == 0 ->
-	    {ok,S};
-       true ->
-	    case can_sock_drv:send(S#s.port,S#s.intf,Mesg) of
-		ok ->
-		    S1 = count(output_frames, S),
-		    {ok,S1};
-		{error,_Reason} ->
-		    output_error(?can_error_data,S)
-	    end
+    case can_sock_drv:send(S#s.port,S#s.intf,Mesg) of
+	ok ->
+	    S1 = count(output_frames, S),
+	    {ok,S1};
+	{error,_Reason} ->
+	    output_error(?can_error_data,S)
     end;
 send_message(_Mesg, S) ->
     output_error(?can_error_data,S).

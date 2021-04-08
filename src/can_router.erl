@@ -59,34 +59,40 @@
 
 -define(SERVER, can_router).
 
+-type ifparam()::#{ mod => atom(),
+		    device => string(),
+		    index  => integer(),
+		    name   => string(),
+		    fd     => boolean()
+		  }.
 
 -record(can_if,
 	{
-	  pid,      %% can interface pid
-	  id,       %% interface id
-	  name,     %% name for easier identification
-	  mon,      %% can app monitor
-	  param,    %% match param normally {Mod,Device,Index,Name}
-	  atime,    %% last input activity time
-	  state = up
+	 pid,        %% can interface pid
+	 id,         %% interface id
+	 name,       %% name for easier identification
+	 mon,        %% can app monitor
+	 param :: ifparam(),  %% match param normally {Mod,Device,Index,Name}
+	 atime,      %% last input activity time
+	 state = up
 	}).
 
 -record(can_app,
 	{
-	  pid,       %% can app pid
-	  mon,       %% can app monitor
-	  interface, %% interface id
-	  fs,        %% can filter
+	 pid,       %% can app pid
+	 mon,       %% can app monitor
+	 interface, %% interface id
+	 fs,        %% can filter
 	 error_reception :: on | off  %% allow error frames
-	 }).
+	}).
 
 -record(s,
 	{
-	  if_count = 1,  %% interface id counter
-	  apps = [],     %% attached can applications
-	  wakeup_timeout :: timeout(),
-	  wakeup = false :: boolean(),
-	  supervisors = [] ::list({pid(), reference()})
+	 if_count = 1,  %% interface id counter
+	 apps = [],     %% attached can applications
+	 wakeup_timeout :: timeout(),
+	 wakeup = false :: boolean(),
+	 supervisors = [] ::list({pid(), reference()})
 	}).
 
 -define(CLOCK_TIME, 16#ffffffff).
@@ -153,7 +159,7 @@ interface(Id) ->
 	[If] when is_record(If, can_if) ->
 	    {ok, If};
 	[] ->
-	    lager:debug("~2w: no such interface\n", [Id]),
+	    ?debug("~2w: no such interface\n", [Id]),
 	    {error,enoent};
 	Ifs when is_list(Ifs)->
 	    lager:warning("~p: several interfaces\n", [Ifs]),
@@ -188,7 +194,8 @@ ifstatus(Id) ->
 
 ifstatus() ->
     %% For all interfaces
-    lists:foldl(fun(#can_if{pid = Pid, param = {_, _, _, Name}}, Acc) ->
+    lists:foldl(fun(#can_if{pid = Pid, param = Param}, Acc) ->
+			Name = maps:get(name, Param, ""),
 			[{{can, Name}, gen_server:call(Pid, ifstatus)} | Acc]
 		end, [], interfaces()).
    
@@ -198,13 +205,13 @@ restart(Id) ->
     case gen_server:call(?SERVER, {interface,Id}) of
 	{ok,If} ->
 	    case If#can_if.param of
-		{can_usb,_,N,_} ->
+		#{mod:=can_usb,index:=N} ->
 		    ok = gen_server:call(If#can_if.pid, stop),
 		    can_usb:start(N);
-		{can_udp,_,N,_} ->
+		#{mod:=can_udp,index:=N} ->
 		    ok = gen_server:call(If#can_if.pid, stop),
 		    can_udp:start(N-51712);
-		{can_sock,IfName,_Index,_} ->
+		#{mod:=can_sock,device:=IfName} ->
 		    ok = gen_server:call(If#can_if.pid, stop),
 		    can_sock:start(IfName)
 	    end;
@@ -269,9 +276,15 @@ error_reception(OnOff) when OnOff =:= on; OnOff =:= off ->
     gen_server:call(?SERVER, {error_reception, self(), OnOff}).
 
 %% add an interface to the simulated can_bus (may be a real canbus)
-join(Params) ->
+join({Mod,Device,Index,Name}) ->
+    Params = #{mod=>Mod,device=>Device,index=>Index,name=>Name},
+    gen_server:call(?SERVER, {join, self(), Params});
+join(Params) when is_map(Params) ->
     gen_server:call(?SERVER, {join, self(), Params}).
 
+join(Pid, {Mod,Device,Index,Name}) ->
+    Params = #{mod=>Mod,device=>Device,index=>Index,name=>Name},
+    gen_server:call(Pid, {join, self(), Params});
 join(Pid, Params) when is_pid(Pid) ->
     gen_server:call(Pid, {join, self(), Params}).
 
@@ -353,7 +366,7 @@ stop() ->
 %%--------------------------------------------------------------------
 init(Args0) ->
     Args = Args0 ++ application:get_all_env(can),
-    lager:start(),  %% ok testing, remain or go?
+    ?start_logging(),  %% ok testing, remain or go?
     process_flag(trap_exit, true),
     start_clock(),
     Wakeup = proplists:get_value(wakeup, Args, false),
@@ -383,7 +396,7 @@ handle_call({send,Pid,Frame},_From, S)
 handle_call({attach,Pid,FilterList}, _From, S) when is_pid(Pid) ->
     case find_app_by_pid(Pid,S#s.apps) of
 	false ->
-	    lager:debug("can_router: process ~p attached.",  [Pid]),
+	    ?debug("can_router: process ~p attached.",  [Pid]),
 	    Mon = erlang:monitor(process, Pid),
 	    %% We may extend app interface someday - now = 0
 	    case make_filter(FilterList) of
@@ -402,7 +415,7 @@ handle_call({detach,Pid}, _From, S) when is_pid(Pid) ->
 	false ->
 	    {reply, ok, S};
 	{value,App,Apps} ->
-	    lager:debug("can_router: process ~p detached.",  [Pid]),
+	    ?debug("can_router: process ~p detached.",  [Pid]),
 	    Mon = App#can_app.mon,
 	    erlang:demonitor(Mon),
 	    receive {'DOWN',Mon,_,_,_} -> ok
@@ -422,13 +435,13 @@ handle_call({error_reception,Pid,OnOff}, _From, S) when is_pid(Pid) ->
 handle_call({join,Pid,Param}, _From, S) ->
     case get_interface_by_param(Param) of
 	false ->
-	    lager:debug("can_router: process ~p, param ~p joined.",  [Pid, Param]),
+	    ?debug("can_router: process ~p, param ~p joined.",  [Pid, Param]),
 	    {ID,S1} = add_if(Pid,Param,S),
 	    {reply, {ok,ID}, S1};
 	If ->
 	    receive
 		{'EXIT', OldPid, _Reason} when If#can_if.pid =:= OldPid ->
-		    lager:debug("join: restart detected\n", []),
+		    ?debug("join: restart detected\n", []),
 		    {ID,S1} = add_if(Pid,Param,S),
 		    {reply, {ok,ID}, S1}
 	    after 0 ->
@@ -544,8 +557,8 @@ handle_call({list_filter,Pid}, _From, S) when is_pid(Pid) ->
 	    {reply, can_filter:list(App#can_app.fs), S}
     end;
 
-handle_call({supervise, on, Pid} = M, _From, S=#s {supervisors = Sups}) ->
-    lager:debug("message ~p", [M]),
+handle_call({supervise, on, Pid} = _M, _From, S=#s {supervisors = Sups}) ->
+    ?debug("message ~p", [_M]),
     case lists:keyfind(Pid, 1, Sups) of
 	{Pid, _Mon}  ->
 	    {reply, ok, S};
@@ -555,8 +568,8 @@ handle_call({supervise, on, Pid} = M, _From, S=#s {supervisors = Sups}) ->
 	    {reply, ok, S#s {supervisors = [{Pid, Mon} | Sups]}}
     end;
 
-handle_call({supervise, off, Pid} = M, _From, S=#s {supervisors = Sups}) ->
-    lager:debug("message ~p", [M]),
+handle_call({supervise, off, Pid} = _M, _From, S=#s {supervisors = Sups}) ->
+    ?debug("message ~p", [_M]),
     case lists:keytake(Pid, 1, Sups) of
 	false ->
 	    {reply, ok, S};
@@ -612,16 +625,16 @@ handle_cast(_Msg, S) ->
 %%--------------------------------------------------------------------
 handle_info({if_state_event, Index, State} = _M, S) ->
     %% interface state changes reported by the interface processes
-    lager:debug("~p",[_M]),
+    ?debug("~p",[_M]),
     case get_interface_by_id(Index) of
 	false ->
-	   lager:warning("Recieved ~p from unknown interface",[_M]);
+	   ?warning("Recieved ~p from unknown interface",[_M]);
 	If=#can_if {state = SOld, param = P} when SOld =/= State ->
 	    set_interface(If#can_if { state = State }),
 	    Msg = {if_state_event, {Index, P}, State},
 	    inform_supervisors(Msg, S#s.supervisors);
 	_If ->
-	    lager:debug("Recieved ~p, no state change",[_M])
+	    ?debug("Recieved ~p, no state change",[_M])
     end,
     {noreply, S};
 
@@ -634,18 +647,18 @@ handle_info({'DOWN',Ref,process,Pid,_Reason},S) ->
 			false ->
 			    {noreply, S};
 			{value, {Pid, Ref}, NewSups} ->
-			    lager:warning("supervisor ~p died, reason=~p", 
+			    ?warning("supervisor ~p died, reason=~p", 
 					  [Pid,_Reason]),
 			    {noreply, S#s { supervisors = NewSups}}
 		    end;
 		If ->
-		    lager:debug("can_router: interface ~p died, reason ~p\n", 
+		    ?debug("can_router: interface ~p died, reason ~p\n", 
 			   [If, _Reason]),
 		    erase_interface(If#can_if.id),
 		    {noreply,S}
 	    end;
 	{value,_App,Apps} ->
-	    lager:debug("can_router: application ~p died, reason ~p\n", 
+	    ?debug("can_router: application ~p died, reason ~p\n", 
 		   [_App, _Reason]),
 	    %% FIXME: Restart?
 	    {noreply,S#s { apps = Apps }}
@@ -654,12 +667,12 @@ handle_info({'EXIT', Pid, Reason}, S) ->
     case get_interface_by_pid(Pid) of
 	false ->
 	    %% Someone else died, log and terminate
-	    lager:debug("can_router: linked process ~p died, reason ~p, terminating\n", 
+	    ?debug("can_router: linked process ~p died, reason ~p, terminating\n", 
 		   [Pid, Reason]),
 	    {stop, Reason, S};
 	If ->
 	    %% One of our interfaces died, log and ignore
-	    lager:debug("can_router: interface ~p died, reason ~p\n", 
+	    ?debug("can_router: interface ~p died, reason ~p\n", 
 		   [If, Reason]),
 	    erase_interface(If#can_if.id),
 	    {noreply,S}
@@ -753,20 +766,20 @@ take_app_by_pid(Pid,Apps) ->
     lists:keytake(Pid, #can_app.pid, Apps).
 	     
 get_interface_by_name(Name) ->
-    lists:foldl(fun(If=#can_if{param = {_, _, _, N}}, Acc)
+    lists:foldl(fun(If=#can_if{param = #{name:=N}}, Acc)
 		      when N =:= Name -> [If | Acc];
 		   (_OtherIf, Acc) ->
 			Acc
 		end, [], get_interface_list()).
 
-get_interface_by_param(Param) ->
+get_interface_by_param(Param) when is_map(Param) ->
     lists:keyfind(Param, #can_if.param, get_interface_list()).
 
 get_interface_by_pid(Pid) ->
     lists:keyfind(Pid, #can_if.pid, get_interface_list()).
 
 get_interface_by_backend({BackEnd, BusId}) ->
-    lists:foldl(fun(If=#can_if{param = {BE, _, BI, _}}, Acc)
+    lists:foldl(fun(If=#can_if{param = #{mod:=BE, index:=BI}}, Acc)
 		      when BE =:= BackEnd, BI =:= BusId -> [If | Acc];
 		   (_OtherIf, Acc) ->
 			Acc
@@ -823,7 +836,7 @@ current_state(Pid, [#can_if {state = S, param = P, id = Id} | Rest]) ->
 inform_supervisors(_Msg, []) ->
     ok;
 inform_supervisors(Msg, [{Pid, _Mon} | Sups]) ->
-    lager:debug("informing ~p of ~p", [Pid, Msg]),
+    ?debug("informing ~p of ~p", [Pid, Msg]),
     Pid ! Msg,
     inform_supervisors(Msg, Sups).
 
@@ -831,7 +844,7 @@ inform_supervisors(Msg, [{Pid, _Mon} | Sups]) ->
 %% and joined CAN interfaces
 %% 
 broadcast(Sender,Frame,Sync,S) ->
-    lager:debug([{tag, frame}],"can_router: broadcast: [~s]", 
+    ?debug([{tag, frame}],"can_router: broadcast: [~s]", 
 		[can_probe:format_frame(Frame)]),
     S1 = broadcast_apps(Sender, Frame, S#s.apps, S),
     broadcast_ifs(Frame, get_interface_list(), Sync, S1).
