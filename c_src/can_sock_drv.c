@@ -534,7 +534,12 @@ static ErlDrvSSizeT can_sock_drv_ctl(ErlDrvData d,
 	    return ctl_reply_ok(rbuf, rsize);
 	}
     }
-    case CAN_SOCK_DRV_CMD_GET_MTU: {
+    case CAN_SOCK_DRV_CMD_GET_MTU: { // get mtu and refresh!
+	struct ifreq ifreq;
+	if (ioctl(INT_EVENT(ctx->sock), SIOCGIFMTU, (char *)&ifreq) >= 0) {
+	    ctx->mtu = ifreq.ifr_mtu;
+	    DEBUGF("detected MTU size = %d", ctx->mtu);
+	}
 	return ctl_reply_u32(ctx->mtu, rbuf, rsize);
     }
 	

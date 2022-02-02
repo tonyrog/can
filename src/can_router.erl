@@ -44,7 +44,7 @@
 -export([config_change/3]).
 -export([if_state_supervision/1]).
 -export([if_state_event/2, if_state_event/3]).
-
+-export([getopts/2, setopts/2]).
 %% gen_server callbacks
 -export([init/1, 
 	 handle_call/3, 
@@ -74,7 +74,7 @@
 	 mon,        %% can app monitor
 	 param :: ifparam(),  %% match param normally {Mod,Device,Index,Name}
 	 atime,      %% last input activity time
-	 state = up
+	 state = undefined
 	}).
 
 -record(can_app,
@@ -192,14 +192,18 @@ resume(Id) ->
 ifstatus(Id) ->
     call_if(Id, ifstatus).    
 
+getopts(Id, Opts) when is_list(Opts) ->
+    call_if(Id, {getopts,Opts}).
+
+setopts(Id, Opts) when is_list(Opts) ->
+    call_if(Id, {setopts,Opts}).
+
 ifstatus() ->
     %% For all interfaces
     lists:foldl(fun(#can_if{pid = Pid, param = Param}, Acc) ->
 			Name = maps:get(name, Param, ""),
 			[{{can, Name}, gen_server:call(Pid, ifstatus)} | Acc]
 		end, [], interfaces()).
-   
-			       
 
 restart(Id) ->
     case gen_server:call(?SERVER, {interface,Id}) of

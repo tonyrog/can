@@ -26,6 +26,7 @@
 
 -behaviour(gen_server).
 
+%% -define(DEBUG, true).
 -include("../include/can.hrl").
 
 %% API
@@ -45,15 +46,15 @@
 	 terminate/2, 
 	 code_change/3]).
 
--export([set_bitrate/2]).
--export([get_bitrate/1]).
 -export([get_version/1]).
 -export([get_serial/1]).
 -export([enable_timestamp/1]).
 -export([disable_timestamp/1]).
+-export([get_bitrate/1, set_bitrate/2]).
+-export([getopts/2, setopts/2, optnames/0]).
+-export([pause/1, resume/1, ifstatus/1]).
 
 %% Test API
--export([pause/1, resume/1, ifstatus/1]).
 -export([dump/1]).
 %% -compile(export_all).
 
@@ -84,20 +85,27 @@
 -define(DEFAULT_BAUDRATE,        115200).
 -define(DEFAULT_IF,              0).
 
--define(SERVER, ?MODULE).
-
 -define(COMMAND_TIMEOUT, 5000).
 -define(OPEN_TIMEOUT,    10000).
+
+-define(SUPPORTED_BITRATES, [10000,20000,50000,100000,125000,
+			     250000,500000,800000,1000000]).
+-define(SUPPORTED_DATARATES, []).
+
+-type can_usb_optname() ::
+	device | name | baud | bitrate | bitrates | datarates | 
+	status_interval | retry_interval | pause | fd.
 
 -type can_usb_option() ::
 	{device,  DeviceName::string()} |
 	{name,    IfName::string()} |
 	{baud,    DeviceBaud::integer()} |
-	{timeout, ReopenTimeout::timeout()} |
 	{bitrate, CANBitrate::integer()} |
+	{datarate, CANDatarate::integer()} |
 	{status_interval, Time::timeout()} |
 	{retry_interval, Time::timeout()} |
-	{pause,   Pause::boolean()}.
+	{pause,   Pause::boolean()} |
+	{fd,   FD::boolean()}.
 	
 -spec start() -> {ok,pid()} | {error,Reason::term()}.
 start() ->
@@ -210,6 +218,22 @@ ifstatus(Id) when is_integer(Id); is_pid(Id); is_list(Id) ->
 dump(Id) when is_integer(Id); is_pid(Id); is_list(Id) ->
     call(Id,dump).
 
+-spec optnames() -> [can_usb_optname()].
+
+optnames() ->
+    [ device, name, baud, bitrate, datarate, bitrates, datarates,
+      status_interval, retry_interval, pause, fd ].
+
+-spec getopts(Id::integer()|pid()|string(), Opts::[can_usb_optname()]) ->
+	  [can_usb_option()].
+getopts(Id, Opts) ->
+    call(Id, {getopts, Opts}).
+
+-spec setopts(Id::integer()|pid()|string(), Opts::[can_usb_option()]) ->
+	  ok.
+setopts(Id, Opts) ->
+    call(Id, {setopts, Opts}).
+
 %%--------------------------------------------------------------------
 %% Function: init(Args) -> {ok, State} |
 %%                         {ok, State, Timeout} |
@@ -291,18 +315,42 @@ init([Id,Opts]) ->
 %%                                      {stop, Reason, State}
 %% Description: Handling call messages
 %%--------------------------------------------------------------------
-handle_call({send,Msg}, _From, S=#s {uart = Uart})  
-  when Uart =/= undefined ->
+handle_call({send,Msg}, _From, S) ->
     {Reply,S1} = send_message(Msg,S),
     {reply, Reply, S1};
-handle_call({send,Msg}, _From, S) ->
-    if not S#s.pause ->
-	    ?debug("Msg ~p dropped", [Msg]);
-       true -> ok
-    end,
-    {reply, ok, S};
 handle_call(statistics,_From,S) ->
     {reply,{ok,can_counter:list()}, S};
+handle_call({getopts, Opts},_From,S) ->
+    Result =
+	lists:map(
+	  fun(device)  -> {device,S#s.device};
+	     (name)    -> {name,S#s.name};
+	     (bitrate) -> {bitrate,S#s.can_speed};
+	     (datarate) -> {datarate, error};
+	     (bitrates) -> {bitrates,?SUPPORTED_BITRATES};
+	     (datarates) -> {datarates,?SUPPORTED_DATARATES};
+	     (baud)    -> {baud,S#s.baud_rate};
+	     (status_interval) -> {status_interval,S#s.status_interval};
+	     (retry_interval) -> {retry_interval,S#s.retry_interval};
+	     (pause) -> {pause,S#s.pause};
+	     (fd) -> {fd,false};
+	     (Opt) -> {Opt, unknown}
+	  end, Opts),
+    {reply, Result, S};
+handle_call({setopts, Opts},_From,S) ->
+    Sn =
+	lists:foldl(
+	  fun({device,Device},Si) -> Si#s {device=Device};
+	     ({name,Name},Si) ->  Si#s {name=Name};
+	     ({bitrate,BitRate},Si) -> Si#s { can_speed=BitRate};
+	     ({baud,Baud},Si) -> Si#s { baud_rate=Baud};
+	     ({status_interval,Ival},Si) -> Si#s { status_interval=Ival};
+	     ({retry_interval,Ival},Si) -> Si#s { retry_interval=Ival};
+	     ({_,_Val},Si) -> Si;
+	     (_, Si) -> Si
+	  end, S, Opts),
+    {reply, ok, Sn};
+
 handle_call({set_bitrate,Rate}, _From, S) ->
     if S#s.uart =:= undefined ->
 	    case speed_number(Rate) of
@@ -345,8 +393,8 @@ handle_call(pause, _From, S=#s {pause = false, uart = Uart})
   when Uart =/= undefined ->
     ?debug("pause.", []),
     ?debug("closing device ~s", [S#s.device]),
-    R = uart:close(S#s.uart),
-    ?debug("closed ~p", [R]),
+    _R = uart:close(S#s.uart),
+    ?debug("closed ~p", [_R]),
     {reply, ok, S#s {pause = true}};
 handle_call(pause, _From, S) ->
     ?debug("pause when not active.", []),
@@ -383,16 +431,9 @@ handle_call(_Request, _From, S) ->
 %%                                      {stop, Reason, State}
 %% Description: Handling cast messages
 %%--------------------------------------------------------------------
-handle_cast({send,Msg}, S=#s {uart = Uart})  
-  when Uart =/= undefined ->
+handle_cast({send,Msg}, S) ->
     {_, S1} = send_message(Msg, S),
     {noreply, S1};
-handle_cast({send,Msg}, S) ->
-    if not S#s.pause ->
-	    ?debug("Msg ~p dropped", [Msg]);
-       true -> ok
-    end,
-    {noreply, S};
 handle_cast({statistics,From},S) ->
     gen_server:reply(From, {ok,can_counter:list()}),
     {noreply, S};
@@ -573,6 +614,12 @@ start_timer(infinity, _Tag) ->
 start_timer(Time, Tag) ->
     erlang:start_timer(Time,self(),Tag).
 
+send_message(_Mesg, S) when S#s.uart =:= undefined ->
+    if not S#s.pause ->
+	    ?debug("~s: ~p, Msg ~p dropped", [?MODULE,S#s.device,_Mesg]);
+       true -> ok
+    end,
+    {ok, S};
 send_message(Mesg, S) when is_record(Mesg,can_frame) ->
     ?debug([{tag, frame}],"can_usb:send_message: [~s]", 
 	   [can_probe:format_frame(Mesg)]),
@@ -585,14 +632,14 @@ send_message(_Mesg, S) ->
     output_error(?can_error_data,S).
 
 send_bin_message(Mesg, Bin, S) when byte_size(Bin) =< 8 ->
-    send_message(Mesg#can_frame.id,
+    send_message_(Mesg#can_frame.id,
 		 Mesg#can_frame.len,
 		 Bin,
 		 S);
 send_bin_message(_Mesg, _Bin, S) ->
     output_error(?can_error_data_too_large,S).
 
-send_message(ID, L, Data, S) ->
+send_message_(ID, L, Data, S) ->
     DCL = if L < 10 -> L+$0; true -> (L-10)+$A end,
     Len = min(L,8),
     if ?is_can_id_sff(ID), ?is_not_can_id_rtr(ID) ->
@@ -644,6 +691,16 @@ to_hex(_V, 0, Acc) -> Acc;
 to_hex(V, N, Acc) ->
     to_hex(V bsr 4,N-1, [ihex(V band 16#f) | Acc]).
 
+%% get 1-based element position or false if not found
+%% index(List, Elem) -> index(List, Elem, 1, false).
+%% get 0-bases element poistion or false if not found
+%% zindex(List, Elem) -> index(List, Elem, 0, false).
+    
+index([Elem|_List], Elem, I, _D) -> I;
+index([_|List], Elem, I, D) -> index(List, Elem, I+1, D);
+index([], _Elem, _I, D) -> D.
+    
+
 canusb_sync_close(S) ->
     command_nop(S),
     command_nop(S),
@@ -653,18 +710,7 @@ canusb_sync_close(S) ->
     true.
 
 speed_number(BitRate) ->
-    case BitRate of
-	10000  -> 0;
-	20000  -> 1;
-	50000  -> 2;
-	100000 -> 3;
-	125000 -> 4;
-	250000 -> 5;
-	500000 -> 6;
-	800000 -> 7;
-	1000000 -> 8;
-	_ -> error
-    end.
+    index(?SUPPORTED_BITRATES, BitRate, 0, error).
 
 canusb_set_bitrate(S, BitRate) ->
     case speed_number(BitRate) of
@@ -743,7 +789,7 @@ wait_reply(S,Timeout) ->
     end.
 
 ok(Buf,Acc,S)   -> {ok,lists:reverse(Acc),S#s { buf=Buf,acc=[]}}.
-error(Reason,Buf,S) -> {{error,Reason}, S#s { buf=Buf, acc=[]}}.
+err(Reason,Buf,S) -> {{error,Reason}, S#s { buf=Buf, acc=[]}}.
 
 count(Counter,S) ->
     can_counter:update(Counter, 1),
@@ -788,7 +834,7 @@ parse(Buf0, Acc, S) ->
 	<<$Z,$\r, Buf/binary>>  -> ok(Buf,Acc,S);  %% message sent
 	<<$\r, Buf/binary>>     -> ok(Buf,Acc,S);
 	<<$\n, Buf/binary>>     -> ok(Buf,Acc,S);
-	<<7, Buf/binary>>       -> error(command,Buf,S);
+	<<7, Buf/binary>>       -> err(command,Buf,S);
 	<<$t,Buf/binary>>       -> parse_11(Buf,false,S#s{buf=Buf0});
 	<<$r,Buf/binary>>       -> parse_11(Buf,true,S#s{buf=Buf0});
 	<<$T,Buf/binary>>       -> parse_29(Buf,false,S#s{buf=Buf0});
@@ -897,11 +943,10 @@ parse_data(L,Rtr,_Buf,_Acc) when L > 0, Rtr =:= false ->
 parse_data(_L,_Rtr,Buf,_Acc) ->
     {{error,?can_error_corrupt}, Buf}.
 
+join(undefined, Pid, _Arg) when is_pid(Pid) ->
+    {ok,?DEFAULT_IF};
 join(Module, Pid, Arg) when is_atom(Module), is_pid(Pid) ->
     Module:join(Pid, Arg);
-join(undefined, Pid, _Arg) when is_pid(Pid) ->
-    %% No join
-    ?DEFAULT_IF;
 join(Module, undefined, Arg) when is_atom(Module) ->
     Module:join(Arg).
   

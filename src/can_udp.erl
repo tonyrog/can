@@ -31,6 +31,9 @@
 -export([start/0, start/1, start/2]).
 -export([start_link/0, start_link/1, start_link/2]).
 -export([stop/1]).
+-export([get_bitrate/1, set_bitrate/2]).
+-export([getopts/2, setopts/2, optnames/0]).
+-export([pause/1, resume/1, ifstatus/1]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
@@ -39,8 +42,11 @@
 -export([reuse_port/0]).
 
 %% Test API
--export([pause/1, resume/1, ifstatus/1]).
+
 -export([dump/1]).
+
+-define(DEFAULT_BITRATE,      250000).
+-define(DEFAULT_DATARATE,     250000).
 
 -record(s, 
 	{
@@ -52,12 +58,15 @@
 	 in,          %% incoming udp socket
 	 out,         %% outgoing udp socket
 	 maddr,       %% multicast address
+	 ttl = 1,     %% multicast ttl value
 	 ifaddr,      %% interface address (any, {192,168,1,4} ...)
 	 mport,       %% port number used
 	 oport,       %% output port number used
 	 pause = false,   %% Pause input
 	 fs,          %% can_filter:new()
-	 fd = false   %% FD support
+	 fd = false,  %% FD support
+	 bitrate = ?DEFAULT_BITRATE,  %% support any bitrate
+	 datarate = ?DEFAULT_DATARATE %% support any datarate (FD)
 	}).
 
 %% MAC specific reuseport options
@@ -77,15 +86,26 @@
 -define(FLAG_FD,   16#0001).
 -define(FLAG_NONE, 16#0000).
 
+-define(SUPPORTED_BITRATES, [10000,20000,50000,100000,125000,
+			     250000,500000,800000,1000000]).
+-define(SUPPORTED_DATARATES, [10000,20000,50000,100000,125000,
+			      250000,500000,800000,1000000,
+			      2000000,3000000,4000000,5000000]).
+			      
+
+-type can_udp_optname() ::
+	device | name | bitrate | datarate | bitrates | datarates |
+	maddr | ifaddr | ttl | pause | fd.
+
 -type can_udp_option() ::
 	{name,     IfName::string()} |
 	{maddr,    inet:ip_address()} |
 	{ifaddr,   inet:ip_address()} |
 	{ttl,      integer()} |
-	{timeout,  ReopenTimeout::integer()} |
-	{bitrate,  CANBitrate::integer()} |
-	{status_interval, Time::timeout()} |
-	{pause,    Pause::boolean()}.
+	{bitrate, CANBitrate::integer()} |
+	{datarate, CANDatarate::integer()} |
+	{pause,    Pause::boolean()} |
+	{fd,       FD::boolean()}.
 
 %%====================================================================
 %% API
@@ -154,6 +174,32 @@ ifstatus(Id) when is_integer(Id); is_pid(Id); is_list(Id) ->
 dump(Id) when is_integer(Id); is_pid(Id); is_list(Id) ->
     call(Id,dump).
 
+set_bitrate(Id, Rate) ->
+    setopts(Id, [{bitrate, Rate}]).
+
+get_bitrate(Id) ->
+    case getopts(Id, [bitrate]) of
+	[] -> {error, einval};
+	[{bitrate,Rate}] -> {ok,Rate}
+    end.
+
+-spec optnames() -> [can_udp_optname()].
+
+optnames() ->
+    [ device, name, baud, bitrate, datarate, bitrates, datarates,
+      status_interval, retry_interval, pause, fd ].
+
+
+-spec getopts(Id::integer()|pid()|string(), Opts::[can_udp_optname()]) ->
+	  [can_udp_option()].
+getopts(Id, Opts) ->
+    call(Id, {getopts, Opts}).
+
+-spec setopts(Id::integer()|pid()|string(), Opts::[can_udp_option()]) ->
+	  ok.
+setopts(Id, Opts) ->
+    call(Id, {setopts, Opts}).
+
 %%====================================================================
 %% gen_server callbacks
 %%====================================================================
@@ -173,6 +219,8 @@ init([BusId, Opts]) ->
     Pid = proplists:get_value(receiver, Opts, undefined),
     MPort = ?CAN_UDP_PORT+BusId,
     Pause = proplists:get_value(pause, Opts, false),
+    BitRate = proplists:get_value(bitrate,Opts,?DEFAULT_BITRATE),
+    DataRate = proplists:get_value(datarate,Opts,?DEFAULT_DATARATE),
     FD    = proplists:get_value(fd, Opts, false),
     LAddr = if is_tuple(LAddr0) -> 
 		    LAddr0;
@@ -212,12 +260,18 @@ init([BusId, Opts]) ->
 			       fd => FD },
 		    case join(Router, Pid, Param) of
 			{ok, If} when is_integer(If) ->
-			    {ok, #s{ receiver={Router,Pid,If},
-				     in=In, mport=MPort,
-				     out=Out, oport=OutPort,
+			    Receiver = {Router,Pid,If},
+			    send_state(up, Receiver),
+			    {ok, #s{ receiver=Receiver,
+				     in=In,
+				     mport=MPort,
+				     out=Out,
+				     oport=OutPort,
 				     maddr=MAddr,
 				     pause = Pause,
 				     fd=FD,
+				     bitrate=BitRate,
+				     datarate=DataRate,
 				     fs=can_filter:new()
 				   }};
 			{error, Reason} = Error ->
@@ -249,6 +303,42 @@ handle_call({send,Mesg}, _From, S) ->
 
 handle_call(statistics,_From,S) ->
     {reply,{ok,can_counter:list()}, S};
+handle_call({getopts, Opts},_From,S) ->
+    Result =
+	lists:map(
+	  fun
+	      (name)   -> {name,S#s.name};
+	      (maddr)  -> {maddr,S#s.maddr};
+	      (ifaddr) -> {ifaddr,S#s.ifaddr};
+	      (bitrate) -> {bitrate,S#s.bitrate};
+	      (datarate) -> if S#s.fd -> {datarate,S#s.datarate};
+			       true -> {datarate, error}
+			    end;
+	      (bitrates) -> {bitrates,?SUPPORTED_BITRATES};
+	      (datarates) -> {datarates,?SUPPORTED_DATARATES};
+	      (ttl)    -> {ttl,S#s.ttl};
+	      (mport)  -> {mport,S#s.mport};
+	      (fd)     -> {fd,S#s.fd};
+	      (Opt) -> {Opt, unknown}
+	  end, Opts),
+    {reply, Result, S};
+handle_call({setopts, Opts},_From,S) ->
+    Sn =
+	lists:foldl(
+	  fun
+	      ({name,Name},Si) ->  Si#s{name=Name};
+	      ({maddr,Addr},Si)  -> Si#s{maddr=Addr}; %% FIXME: reopen!
+	      ({mport,Port},Si)  -> Si#s{mport=Port}; %% FIXME: reopen!
+	      ({ifaddr,Addr},Si) -> Si#s{ifaddr=Addr}; %% FIXME: reopen!
+	      ({ttl,TTL},Si)    -> Si#s{ttl=TTL}; %% inet:setopts..
+	      ({fd,FD},Si)     -> Si#s{fd=FD};
+	      ({bitrate,Rate},Si) -> Si#s{bitrate=Rate};
+	      ({datarate,Rate},Si) -> Si#s{datarate=Rate};
+	      ({_,_Val},Si) -> Si;
+	      (_, Si) -> Si
+	  end, S, Opts),
+    {reply, ok, Sn};
+
 handle_call({add_filter,F}, _From, S) ->
     {I,Fs} = can_filter:add(F,S#s.fs),
     {reply, {ok,I}, S#s { fs=Fs }};
@@ -478,6 +568,12 @@ adjust_fd_len(Len) when Len =< 32 -> 32;
 adjust_fd_len(Len) when Len =< 48 -> 48;
 adjust_fd_len(Len) when Len =< 64 -> 64.
 
+send_state(State, {undefined, Pid, If}) when is_pid(Pid) ->
+    Pid ! {if_state_event, If, State};
+send_state(State,{Module, undefined, If}) when is_atom(Module) ->
+    Module:if_state_event(If, State);
+send_state(State,{Module, Pid, If}) when is_atom(Module), is_pid(Pid) ->
+    Module:if_state_event(Pid, If, State).
 
 count(Counter,S) ->
     can_counter:update(Counter, 1),
@@ -494,11 +590,10 @@ ierr(Reason,S) ->
     S1 = count(input_error, S),
     count({input_error,Reason}, S1).
 
+join(undefined, Pid, _Arg) when is_pid(Pid) ->
+    {ok,?DEFAULT_IF};
 join(Module, Pid, Arg) when is_atom(Module), is_pid(Pid) ->
     Module:join(Pid, Arg);
-join(undefined, Pid, _Arg) when is_pid(Pid) ->
-    %% No join
-    ?DEFAULT_IF;
 join(Module, undefined, Arg) when is_atom(Module) ->
     Module:join(Arg).
     

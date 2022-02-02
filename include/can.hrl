@@ -193,20 +193,20 @@
 -else.
 -define(start_logging(), ok).
 -ifdef(DEBUG).
--define(debug(T,F,A), io:format((F),(A))).
--define(debug(F,A), io:format((F),(A))).
--define(debug(F),   io:format((F))).
+-define(debug(T,F,A), io:format((F)++"\n",(A))).
+-define(debug(F,A), io:format((F)++"\n",(A))).
+-define(debug(F),   io:format((F)++"\n")).
 -else.
 -define(debug(T,F,A), ok).
 -define(debug(F,A), ok).
 -define(debug(F),   ok).
 -endif.
--define(warning(F), io:format((F))).
--define(warning(F,A), io:format((F),(A))).
--define(error(F), io:format((F))).
--define(error(F,A), io:format((F),(A))).
--define(info(F), io:format((F))).
--define(info(F,A), io:format((F),(A))).
+-define(warning(F), io:format((F)++"\n")).
+-define(warning(F,A), io:format((F)++"\n",(A))).
+-define(error(F), io:format((F)++"\n")).
+-define(error(F,A), io:format((F)++"\n",(A))).
+-define(info(F), io:format((F)++"\n")).
+-define(info(F,A), io:format((F)++"\n",(A))).
 -endif.
 
 -endif.

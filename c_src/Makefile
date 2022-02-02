@@ -13,10 +13,14 @@ LDFLAGS+=-shared
 OBJS = can_sock_drv.o
 LIBS = 
 
-all: ../priv/$(APP)_drv.so
+all: ../priv/$(APP)_drv.so ../priv/ipset
 
 ../priv/$(APP)_drv.so: $(OBJS)
 	$(CC) $(LDFLAGS) $(OBJS) $(LIBS) -o ../priv/$(APP)_drv.so
+
+# sudo chown root:root ipset; sudo chmod +s ipset
+../priv/ipset: ipset.o
+	$(CC) ipset.o -o $@
 
 %.o:	%.c
 	$(CC) $(CFLAGS) -c -fPIC $<
