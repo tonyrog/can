@@ -25,7 +25,7 @@
 
 -behaviour(gen_server).
 
--define(DEBUG, true).
+%% -define(DEBUG, true).
 -include("../include/can.hrl").
 
 %% API
@@ -43,9 +43,15 @@
 -export([dump/1]).
 -export([get_link_opts/1]).
 
--define(DEFAULT_BITRATE,         250000).
--define(DEFAULT_DATARATE,        1000000).
+-define(DEFAULT_BITRATE,  250000).
+-define(DEFAULT_DATARATE, 1000000).
+-define(DEFAULT_BITRATES, [100000, 125000, 250000, 500000, 800000, 1000000]).
+-define(DEFAULT_DATARATES, [100000, 125000, 250000, 500000, 800000, 1000000,
+			    2000000, 3000000, 4000000, 5000000]).
 -define(DEFAULT_IF,0).
+
+-define(verbose(F, A), ok).
+%% -define(verbose(F, A), io:format((F),(A))).
 
 -type can_sock_optname() ::
 	device | name | bitrate | datarate | 
@@ -55,7 +61,9 @@
 	{device,  DeviceName::string()} |  %% can be pattern
 	{name,    IfName::string()} |
 	{bitrate, CANBitrate::integer()} |
+	{bitrates, [CANBitrate::integer()]} |
 	{datarate, CANDatarate::integer()} |
+	{datarates, [CANDatarate::integer()]} |
 	{pause,   Pause::boolean()} |
 	{fd, Enable::boolean()} |
 	{mtu, Mtu::16|72} |  %% normal CAN or CANFD
@@ -68,6 +76,8 @@
 %%      {fd_non_iso, Enable::boolean()
 %%      {presume_ack, Enable::boolean()
 %%
+-type cid() :: integer() | pid() | string().
+-define(is_cid(X),(is_integer((X)) orelse is_pid((X)) orelse is_list((X)))).
 
 -record(s,
 	{
@@ -83,7 +93,9 @@
 	 index,                     %% device index (bind to)
 	 intf,                      %% out-bound interface
 	 bitrate :: integer(),      %% CAN bus speed
+	 bitrates :: [integer()],   %% CAN bus speed
 	 datarate :: integer(),     %% CAN bus data speed (FD)
+	 datarates :: [integer()],  %% CAN bus data speed (FD)
 	 mtu :: undefined|16|72,    %% Link MTU size
 	 fd :: boolean(),           %% Request Can FD support
 	 listen_only :: boolean(),  %% Listen only 
@@ -142,23 +154,34 @@ stop(BusId) ->
 	    Error
     end.
 
--spec pause(Id::integer() | pid() | string()) -> ok | {error, Error::atom()}.
-pause(Id) when is_integer(Id); is_pid(Id); is_list(Id) ->
+-spec pause(Id::cid()) -> ok | {error, Error::atom()}.
+pause(Id) when ?is_cid(Id) ->
     call(Id, pause).
--spec resume(Id::integer() | pid() | string()) -> ok | {error, Error::atom()}.
-resume(Id) when is_integer(Id); is_pid(Id); is_list(Id) ->
+-spec resume(Id::cid()) -> ok | {error, Error::atom()}.
+resume(Id) when ?is_cid(Id) ->
     call(Id, resume).
--spec ifstatus(If::integer() | pid() | string()) ->
-		      {ok, Status::atom()} | {error, Reason::term()}.
-ifstatus(Id) when is_integer(Id); is_pid(Id); is_list(Id) ->
+-spec ifstatus(Id::cid()) ->
+	  {ok, Status::atom()} | {error, Reason::term()}.
+ifstatus(Id) when ?is_cid(Id) ->
     call(Id, ifstatus).
 
--spec dump(Id::integer()| pid() | string()) -> ok | {error, Error::atom()}.
-dump(Id) when is_integer(Id); is_pid(Id); is_list(Id) ->
+-spec dump(Id::cid()) -> ok | {error, Error::atom()}.
+dump(Id) when ?is_cid(Id) ->
     call(Id,dump).
 
+-spec set_bitrate(Id::cid(), BitRate::integer()) ->
+	  ok | {error,Reason::term()}.
+
 set_bitrate(Id, Rate) ->
-    setopts(Id, [{bitrate, Rate}]).
+    case setopts(Id, [{bitrate, Rate}]) of
+	[{bitrate, Result}] ->
+	    Result;
+	[] ->
+	    {error, einval}
+    end.	
+
+-spec get_bitrate(Id::cid()) -> 
+	  {ok,BitRate::integer()} | {error,Reason::term()}.
 
 get_bitrate(Id) ->
     case getopts(Id, [bitrate]) of
@@ -169,16 +192,16 @@ get_bitrate(Id) ->
 -spec optnames() -> [can_sock_optname()].
 
 optnames() ->
-    [ device, name, baud, bitrate, datarate, bitrates, datarates,
+    [ device, name, bitrate, datarate, bitrates, datarates,
       pause, fd, mtu, listen_only, restart_ms ].
 
--spec getopts(Id::integer()|pid()|string(), Opts::[can_sock_optname()]) ->
+-spec getopts(Id::cid(), Opts::[can_sock_optname()]) ->
 	  [can_sock_option()].
 getopts(Id, Opts) ->
     call(Id, {getopts, Opts}).
 
--spec setopts(Id::integer()|pid()|string(), Opts::[can_sock_option()]) ->
-	  ok.
+-spec setopts(Id::cid(), Opts::[can_sock_option()]) ->
+	  [{can_sock_optname(),ok|{error,Reason::term()}}].
 setopts(Id, Opts) ->
     call(Id, {setopts, Opts}).
 
@@ -203,6 +226,8 @@ init([BusId,Opts]) ->
 				   integer_to_list(BusId)),
     BitRate = proplists:get_value(bitrate, Opts, ?DEFAULT_BITRATE),
     DataRate = proplists:get_value(bitrate, Opts, ?DEFAULT_DATARATE),
+    BitRates = proplists:get_value(bitrates, Opts, ?DEFAULT_BITRATES),
+    DataRates = proplists:get_value(datarates, Opts, ?DEFAULT_DATARATES),
     FD = proplists:get_value(fd, Opts, false),
     ListenOnly = proplists:get_value(listen_only, Opts, false),
     RestartMs = proplists:get_value(restart_ms, Opts, 0),
@@ -221,8 +246,10 @@ init([BusId,Opts]) ->
 		    device = Device,
 		    intf = If,
 		    bitrate = BitRate,
+		    bitrates = BitRates,
 		    fd = FD,              %% request FD support
 		    datarate = DataRate,  %% requested data rate (FD)
+		    datarates = DataRates,  %% requested data rate (FD)
 		    listen_only = ListenOnly,
 		    restart_ms = RestartMs,
 		    pause = Pause,
@@ -258,8 +285,8 @@ handle_call({getopts, Opts},_From,S) ->
 	     (name)    -> {name,S#s.name};
 	     (bitrate) -> {bitrate,S#s.bitrate};
 	     (datarate) -> {datarate,S#s.datarate};
-	     (bitrates) -> {bitrate,any};
-	     (datarates) -> {datarate,any};
+	     (bitrates) -> {bitrates,S#s.bitrates};
+	     (datarates) -> {datarates,S#s.datarates};
 	     (fd) -> {fd,S#s.fd};
 	     (mtu) -> 
 		  if is_port(S#s.port) ->
@@ -277,8 +304,8 @@ handle_call({getopts, Opts},_From,S) ->
 	  end, Opts),
     {reply, Result, S};
 handle_call({setopts, Opts},_From,S) ->
-    Sn = changeopts(Opts, S),
-    {reply, ok, Sn};
+    {Reply, S1} = changeopts(Opts,S),
+    {reply, Reply, S1};
 
 handle_call({add_filter,F}, _From, S) ->
     {I,Fs} = can_filter:add(F,S#s.fs),
@@ -397,7 +424,7 @@ handle_info({netlink,_NRef,Dev,flags,Old0,New0}, S) ->
 		      false -> down
 		  end
 	  end,
-    io:format("_Old = ~w, New = ~w\n", [_Old, New]),
+    ?verbose("_Old = ~w, New = ~w\n", [_Old, New]),
     case S#s.state of
 	init -> %% init: make sure device is in down stat 
 	    case New of
@@ -515,24 +542,33 @@ code_change(_OldVsn, State, _Extra) ->
 %% FIXME; device change require new subscription and restart! (and re-join!!)
 %%        name change require update of join Param?
 changeopts(Opts, S) ->
-    changeopts(Opts, false, S).
+    changeopts_(Opts, [], false, S).
 
-changeopts([{Key,Val} | Opts], SetLink, S) ->
+changeopts_([{Key,Value}|Opts], Acc, SetLink, S) ->
     case Key of
-	device -> changeopts(Opts, SetLink, S#s {device=Val});
-	name -> changeopts(Opts, SetLink, S#s {name=Val});
-	bitrate -> changeopts(Opts, true, S#s {bitrate=Val});
-	datarate -> changeopts(Opts, true, S#s {datarate=Val});
-	fd -> changeopts(Opts, true, S#s { fd=Val });
-	listen_only -> changeopts(Opts, true, S#s { listen_only=Val });
-	restart_ms -> changeopts(Opts, true, S#s { restart_ms=Val });
-	_ -> changeopts(Opts, SetLink, S)
+	device ->
+	    changeopts_(Opts, SetLink, [{Key,ok}|Acc], S#s {device=Value});
+	name -> 
+	    changeopts_(Opts, SetLink, [{Key,ok}|Acc], S#s {name=Value });
+	bitrate ->
+	    changeopts_(Opts, true, [{Key,ok}|Acc], S#s {bitrate=Value });
+	datarate ->
+	    changeopts_(Opts, true, [{Key,ok}|Acc], S#s {datarate=Value });
+	fd -> 
+	    changeopts_(Opts, true, [{Key,ok}|Acc], S#s { fd=Value });
+	listen_only ->
+	    changeopts_(Opts, true, [{Key,ok}|Acc], S#s { listen_only=Value });
+	restart_ms ->
+	    changeopts_(Opts, true, [{Key,ok}|Acc], S#s { restart_ms=Value });
+	_ ->
+	    changeopts_(Opts, SetLink, [{Key,{error,einval}}|Acc],  S)
     end;
-changeopts([], true, S) ->
+changeopts_([], true, Acc, S) ->
     can_sock_link:down(S#s.device),
-    S#s { state = change };
-changeopts([], false, S) ->
-    S.
+    {lists:reverse(Acc), S#s { state = change }};
+changeopts_([], false, Acc, S) ->
+    {lists:reverse(Acc), S}.
+
 
 setup(S, Dev)  when S#s.state =:= init; S#s.state =:= change ->
     Res = set_link_opts(S, Dev),
@@ -563,6 +599,7 @@ running(S) when S#s.state =:= setup ->
 			    _FDRes = set_fd(Port,S#s.fd, Mtu),
 			    ?debug("can_sock: fd ~w = ~w, mtu=~w",
 				   [_FDRes, S#s.fd, Mtu]),
+			    can_sock_drv:set_error_filter(Port, 16#ff),
 			    send_state(up, S#s.receiver),
 			    S#s { state = running, 
 				  port = Port,
@@ -683,7 +720,7 @@ oerr(Reason,S) ->
 apply_filters(S) ->
     {ok,Filter} = can_filter:list(S#s.fs),
     Fs = [F || {_I,F} <- Filter],
-    %% io:format("apply_filters: fs=~p", [Fs]),
+    %% ?verbose("apply_filters: fs=~p", [Fs]),
     _Res =
 	if Fs =:= [] ->
 		All = #can_filter { id = 0, mask = 0 },
@@ -691,7 +728,7 @@ apply_filters(S) ->
 	   true ->
 		can_sock_drv:set_filters(S#s.port, Fs)
 	end,
-    %% io:format("Res = ~p", [_Res]),
+    %% ?verbose("Res = ~p", [_Res]),
     ok.
 
 join(undefined, Pid, _Arg) when is_pid(Pid) ->
@@ -706,7 +743,11 @@ join(Module, undefined, Arg) when is_atom(Module) ->
 input(Frame, S=#s {receiver = Receiver}) ->
     %% read number of filtered frames ?
     input_frame(Frame, Receiver),
-    count(input_frames, S).
+    if ?is_can_id_err(Frame#can_frame.id) ->
+	    count(error_frames, S);
+       true ->
+	    count(input_frames, S)
+    end.
 
 %%    case can_filter:input(Frame, S#s.fs) of
 %%	true ->

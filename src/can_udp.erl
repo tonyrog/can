@@ -48,6 +48,9 @@
 -define(DEFAULT_BITRATE,      250000).
 -define(DEFAULT_DATARATE,     250000).
 
+-type cid() :: integer() | pid() | string().
+-define(is_cid(X),(is_integer((X)) orelse is_pid((X)) orelse is_list((X)))).
+
 -record(s, 
 	{
 	 name::string(),
@@ -65,8 +68,8 @@
 	 pause = false,   %% Pause input
 	 fs,          %% can_filter:new()
 	 fd = false,  %% FD support
-	 bitrate = ?DEFAULT_BITRATE,  %% support any bitrate
-	 datarate = ?DEFAULT_DATARATE %% support any datarate (FD)
+	 bitrate = ?DEFAULT_BITRATE,
+	 datarate = ?DEFAULT_DATARATE
 	}).
 
 %% MAC specific reuseport options
@@ -159,23 +162,34 @@ stop(BusId) ->
 	    Error
     end.
 
--spec pause(Id::integer() | pid() | string()) -> ok | {error, Error::atom()}.
-pause(Id) when is_integer(Id); is_pid(Id); is_list(Id) ->
+-spec pause(Id::cid()) -> ok | {error, Error::atom()}.
+pause(Id) when ?is_cid(Id) ->
     call(Id, pause).
--spec resume(Id::integer() | pid() | string()) -> ok | {error, Error::atom()}.
-resume(Id) when is_integer(Id); is_pid(Id); is_list(Id) ->
+-spec resume(Id::cid()) -> ok | {error, Error::atom()}.
+resume(Id) when ?is_cid(Id) ->
     call(Id, resume).
--spec ifstatus(If::integer() | pid() | string()) ->
-		      {ok, Status::atom()} | {error, Reason::term()}.
-ifstatus(Id) when is_integer(Id); is_pid(Id); is_list(Id) ->
+-spec ifstatus(Id::cid()) ->
+	  {ok, Status::atom()} | {error, Reason::term()}.
+ifstatus(Id) when ?is_cid(Id) ->
     call(Id, ifstatus).
 
--spec dump(Id::integer()| pid() | string()) -> ok | {error, Error::atom()}.
-dump(Id) when is_integer(Id); is_pid(Id); is_list(Id) ->
+-spec dump(Id::cid()) -> ok | {error, Error::atom()}.
+dump(Id) when ?is_cid(Id) ->
     call(Id,dump).
 
+-spec set_bitrate(Id::cid(), BitRate::integer()) ->
+	  ok | {error,Reason::term()}.
+
 set_bitrate(Id, Rate) ->
-    setopts(Id, [{bitrate, Rate}]).
+    case setopts(Id, [{bitrate, Rate}]) of
+	[{bitrate, Result}] ->
+	    Result;
+	[] ->
+	    {error, einval}
+    end.
+
+-spec get_bitrate(Id::cid()) -> 
+	  {ok,BitRate::integer()} | {error,Reason::term()}.
 
 get_bitrate(Id) ->
     case getopts(Id, [bitrate]) of
@@ -186,17 +200,17 @@ get_bitrate(Id) ->
 -spec optnames() -> [can_udp_optname()].
 
 optnames() ->
-    [ device, name, baud, bitrate, datarate, bitrates, datarates,
-      status_interval, retry_interval, pause, fd ].
+    [ device, name, bitrate, datarate, bitrates, datarates,
+      maddr, ifaddr, ttl, pause, fd ].
 
-
--spec getopts(Id::integer()|pid()|string(), Opts::[can_udp_optname()]) ->
+-spec getopts(Id::cid(), Opts::[can_udp_optname()]) ->
 	  [can_udp_option()].
 getopts(Id, Opts) ->
     call(Id, {getopts, Opts}).
 
 -spec setopts(Id::integer()|pid()|string(), Opts::[can_udp_option()]) ->
-	  ok.
+	  [{can_udp_optname(),ok|{error,Reason::term()}}].
+
 setopts(Id, Opts) ->
     call(Id, {setopts, Opts}).
 
@@ -319,26 +333,12 @@ handle_call({getopts, Opts},_From,S) ->
 	      (ttl)    -> {ttl,S#s.ttl};
 	      (mport)  -> {mport,S#s.mport};
 	      (fd)     -> {fd,S#s.fd};
-	      (Opt) -> {Opt, unknown}
+	      (Opt) -> {Opt, undefined}
 	  end, Opts),
     {reply, Result, S};
 handle_call({setopts, Opts},_From,S) ->
-    Sn =
-	lists:foldl(
-	  fun
-	      ({name,Name},Si) ->  Si#s{name=Name};
-	      ({maddr,Addr},Si)  -> Si#s{maddr=Addr}; %% FIXME: reopen!
-	      ({mport,Port},Si)  -> Si#s{mport=Port}; %% FIXME: reopen!
-	      ({ifaddr,Addr},Si) -> Si#s{ifaddr=Addr}; %% FIXME: reopen!
-	      ({ttl,TTL},Si)    -> Si#s{ttl=TTL}; %% inet:setopts..
-	      ({fd,FD},Si)     -> Si#s{fd=FD};
-	      ({bitrate,Rate},Si) -> Si#s{bitrate=Rate};
-	      ({datarate,Rate},Si) -> Si#s{datarate=Rate};
-	      ({_,_Val},Si) -> Si;
-	      (_, Si) -> Si
-	  end, S, Opts),
-    {reply, ok, Sn};
-
+    {Result,S1} = changeopts(Opts, S),
+    {reply, Result, S1};
 handle_call({add_filter,F}, _From, S) ->
     {I,Fs} = can_filter:add(F,S#s.fs),
     {reply, {ok,I}, S#s { fs=Fs }};
@@ -463,6 +463,34 @@ code_change(_OldVsn, State, _Extra) ->
 %%--------------------------------------------------------------------
 %%% Internal functions
 %%--------------------------------------------------------------------
+
+changeopts(Opts, S) ->
+    changeopts_(Opts,[],S).
+    
+changeopts_([{Key,Value}|Opts],Acc,S) ->
+    case Key of
+	name ->
+	    changeopts_(Opts,[{Key,ok}|Acc],S#s{name=Value});
+	maddr -> %% FIXME: reopen!
+	    changeopts_(Opts,[{Key,ok}|Acc],S#s{maddr=Value});
+	mport -> %% FIXME: reopen!
+	    changeopts_(Opts,[{Key,ok}|Acc],S#s{mport=Value});
+	ifaddr -> %% FIXME: reopen!
+	    changeopts_(Opts,[{Key,ok}|Acc],S#s{ifaddr=Value});
+	ttl -> %% FIXME: inet:setopts!
+	    changeopts_(Opts,[{Key,ok}|Acc],S#s{ttl=Value});
+	fd ->
+	    changeopts_(Opts,[{Key,ok}|Acc],S#s{fd=Value});
+	bitrate ->
+	    changeopts_(Opts,[{Key,ok}|Acc],S#s{bitrate=Value});
+	datarate ->
+	    changeopts_(Opts,[{Key,ok}|Acc],S#s{datarate=Value});
+	_ ->
+	    changeopts_(Opts,[{Key,{error,einval}}|Acc],S)
+    end;
+changeopts_([],Acc,S) ->
+    {lists:reverse(Acc), S}.
+
 
 reuse_port() ->
     case os:type() of

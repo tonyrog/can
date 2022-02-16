@@ -58,6 +58,10 @@
 -export([dump/1]).
 %% -compile(export_all).
 
+-type cid() :: integer() | pid() | string().
+-define(is_cid(X),(is_integer((X)) orelse is_pid((X)) orelse is_list((X)))).
+
+
 -record(s, 
 	{
 	  name::string(),
@@ -147,22 +151,31 @@ stop(BusId) ->
 	    Error
     end.
 
--spec set_bitrate(Pid::pid(), BitRate::integer()) ->
-			 ok | {error,Reason::term()}.
+-spec set_bitrate(Id::cid(), BitRate::integer()) ->
+	  ok | {error,Reason::term()}.
 
-set_bitrate(Pid, BitRate) ->
-    gen_server:call(Pid, {set_bitrate, BitRate}).
+set_bitrate(Id, Rate) ->
+    case setopts(Id, [{bitrate, Rate}]) of
+	[{bitrate, Result}] ->
+	    Result;
+	[] ->
+	    {error, einval}
+    end.
 
--spec get_bitrate(Pid::pid()) -> 
-			 {ok,BitRate::integer()} | {error,Reason::term()}.
-get_bitrate(Pid) ->
-    gen_server:call(Pid, get_bitrate).
+-spec get_bitrate(Id::cid()) -> 
+	  {ok,BitRate::integer()} | {error,Reason::term()}.
+
+get_bitrate(Id) ->
+    case getopts(Id, [bitrate]) of
+	[] -> {error, einval};
+	[{bitrate,Rate}] -> {ok,Rate}
+    end.
 
 %% collect when init device?
--spec get_version(Pid::pid()) -> 
-			 {ok,Version::string()} | {error,Reason::term()}.
-get_version(Pid) ->
-    case gen_server:call(Pid, {command, "V"}) of
+-spec get_version(Id::cid()) -> 
+	  {ok,Version::string()} | {error,Reason::term()}.
+get_version(Id) ->
+    case call(Id, {command, "V"}) of
 	{ok, [$V,H1,H0,S1,S0]} ->
 	    {ok, {H1-$0,H0-$0}, {S1-$0,S0-$0}};
 	Error ->
@@ -170,10 +183,10 @@ get_version(Pid) ->
     end.
 
 %% collect when init device?
--spec get_serial(Pid::pid()) ->
+-spec get_serial(Id::cid()) ->
 			{ok,Version::string()} | {error,Reason::term()}.
-get_serial(Pid) ->
-    case gen_server:call(Pid, {command, "N"}) of
+get_serial(Id) ->
+    case call(Id, {command, "N"}) of
 	{ok, [$N|BCDSn]} ->
 	    {ok, BCDSn};
 	Error ->
@@ -181,11 +194,11 @@ get_serial(Pid) ->
     end.
 
 %% set as argument and initialize when device starts?
--spec enable_timestamp(Pid::pid()) ->
+-spec enable_timestamp(Id::cid()) ->
 			      ok | {error,Reason::term()}.
 %% enable/disable timestamp - only when channel is closed!
-enable_timestamp(Pid) ->
-    case gen_server:call(Pid, {command, "Z1"}) of
+enable_timestamp(Id) ->
+    case call(Id, {command, "Z1"}) of
 	{ok, _} ->
 	    ok;
 	Error ->
@@ -193,28 +206,28 @@ enable_timestamp(Pid) ->
     end.
 
 
--spec disable_timestamp(Pid::pid()) ->
-			       ok | {error,Reason::term()}.
-disable_timestamp(Pid) ->
-    case gen_server:call(Pid, {command, "Z0"}) of
+-spec disable_timestamp(Id::cid()) ->
+	  ok | {error,Reason::term()}.
+disable_timestamp(Id) ->
+    case call(Id, {command, "Z0"}) of
 	{ok, _} ->
 	    ok;
 	Error ->
 	    Error
     end.
 
--spec pause(Id::integer() | pid() | string()) -> ok | {error, Error::atom()}.
+-spec pause(Id::cid()) -> ok | {error, Error::atom()}.
 pause(Id) when is_integer(Id); is_pid(Id); is_list(Id) ->
     call(Id, pause).
--spec resume(Id::integer() | pid() | string()) -> ok | {error, Error::atom()}.
+-spec resume(Id::cid()) -> ok | {error, Error::atom()}.
 resume(Id) when is_integer(Id); is_pid(Id); is_list(Id) ->
     call(Id, resume).
--spec ifstatus(If::integer() | pid() | string()) ->
-		      {ok, Status::atom()} | {error, Reason::term()}.
+-spec ifstatus(Id::cid()) ->
+	  {ok, Status::atom()} | {error, Reason::term()}.
 ifstatus(Id) when is_integer(Id); is_pid(Id); is_list(Id) ->
     call(Id, ifstatus).
 
--spec dump(Id::integer()| pid() | string()) -> ok | {error, Error::atom()}.
+-spec dump(Id::cid()) -> ok | {error, Error::atom()}.
 dump(Id) when is_integer(Id); is_pid(Id); is_list(Id) ->
     call(Id,dump).
 
@@ -224,13 +237,14 @@ optnames() ->
     [ device, name, baud, bitrate, datarate, bitrates, datarates,
       status_interval, retry_interval, pause, fd ].
 
--spec getopts(Id::integer()|pid()|string(), Opts::[can_usb_optname()]) ->
+-spec getopts(Id::cid(), Opts::[can_usb_optname()]) ->
 	  [can_usb_option()].
 getopts(Id, Opts) ->
     call(Id, {getopts, Opts}).
 
--spec setopts(Id::integer()|pid()|string(), Opts::[can_usb_option()]) ->
-	  ok.
+-spec setopts(Id::cid(), Opts::[can_usb_option()]) ->
+	  [{can_usb_optname(),ok|{error,Reason::term()}}].
+
 setopts(Id, Opts) ->
     call(Id, {setopts, Opts}).
 
@@ -326,7 +340,7 @@ handle_call({getopts, Opts},_From,S) ->
 	  fun(device)  -> {device,S#s.device};
 	     (name)    -> {name,S#s.name};
 	     (bitrate) -> {bitrate,S#s.can_speed};
-	     (datarate) -> {datarate, error};
+	     (datarate) -> {datarate, undefined};
 	     (bitrates) -> {bitrates,?SUPPORTED_BITRATES};
 	     (datarates) -> {datarates,?SUPPORTED_DATARATES};
 	     (baud)    -> {baud,S#s.baud_rate};
@@ -334,44 +348,12 @@ handle_call({getopts, Opts},_From,S) ->
 	     (retry_interval) -> {retry_interval,S#s.retry_interval};
 	     (pause) -> {pause,S#s.pause};
 	     (fd) -> {fd,false};
-	     (Opt) -> {Opt, unknown}
+	     (Opt) -> {Opt, undefined}
 	  end, Opts),
     {reply, Result, S};
 handle_call({setopts, Opts},_From,S) ->
-    Sn =
-	lists:foldl(
-	  fun({device,Device},Si) -> Si#s {device=Device};
-	     ({name,Name},Si) ->  Si#s {name=Name};
-	     ({bitrate,BitRate},Si) -> Si#s { can_speed=BitRate};
-	     ({baud,Baud},Si) -> Si#s { baud_rate=Baud};
-	     ({status_interval,Ival},Si) -> Si#s { status_interval=Ival};
-	     ({retry_interval,Ival},Si) -> Si#s { retry_interval=Ival};
-	     ({_,_Val},Si) -> Si;
-	     (_, Si) -> Si
-	  end, S, Opts),
-    {reply, ok, Sn};
-
-handle_call({set_bitrate,Rate}, _From, S) ->
-    if S#s.uart =:= undefined ->
-	    case speed_number(Rate) of
-		error ->
-		    {reply, {error,bad_bit_rate}, S};
-		_ -> %% valid canusb speed
-		    {reply, ok, S#s { can_speed=Rate}}
-	    end;
-       true ->
-	    command_close(S),
-	    case canusb_set_bitrate(S, Rate) of
-		{ok, _Reply, S1} ->
-		    command_open(S1),
-		    {reply, ok, S1#s { can_speed=Rate}};
-		{Error,S1} ->
-		    command_open(S1),
-		    {reply, Error, S1}
-	    end
-    end;
-handle_call(get_bitrate, _From, S) ->
-    {reply, {ok,S#s.can_speed}, S};
+    {Result,S1} = changeopts(Opts, S),
+    {reply, Result, S1};
 handle_call({command,Cmd}, _From, S) ->
     case command(S, Cmd) of
 	{ok,Reply,S1} ->
@@ -551,6 +533,58 @@ code_change(_OldVsn, State, _Extra) ->
 %%--------------------------------------------------------------------
 %%% Internal functions
 %%--------------------------------------------------------------------
+
+changeopts(Opts, S) ->
+    changeopts_(Opts,[],S).
+
+changeopts_([{Key,Value}|Opts],Acc,S) ->
+    case Key of
+	device ->
+	    changeopts_(Opts, [{Key,ok}|Acc], S#s {device=Value});
+	name -> 
+	    changeopts_(Opts, [{Key,ok}|Acc], S#s {name=Value});
+	bitrate ->
+	    case set_can_speed(Value, S) of
+		Error = {error,_} ->
+		    changeopts_(Opts, [{Key,Error}|Acc], S);
+		ok ->
+		    changeopts_(Opts, [{Key,ok}|Acc], 
+				  S#s { can_speed=Value })
+	    end;
+	baud ->
+	    changeopts_(Opts, [{Key,ok}|Acc], S#s { baud_rate=Value });
+	status_interval ->
+	    changeopts_(Opts, [{Key,ok}|Acc], 
+			S#s { status_interval=Value});
+	retry_interval -> 
+	    changeopts_(Opts, [{Key,ok}|Acc], 
+			  S#s { retry_interval=Value});
+	_ ->
+	    changeopts_(Opts, [{Key, {error, einval}}|Acc],  S)
+    end;
+changeopts_([], Acc, S) ->
+    {lists:reverse(Acc), S}.
+
+
+set_can_speed(Rate, S) ->
+    if S#s.uart =:= undefined ->
+	    case speed_number(Rate) of
+		error ->
+		    {error,bad_bit_rate};
+		_ ->
+		    ok
+	    end;
+       true ->
+	    command_close(S),
+	    case canusb_set_bitrate(S, Rate) of
+		{ok, _Reply, S1} ->
+		    command_open(S1),
+		    ok;
+		{Error={error,_},S1} ->
+		    command_open(S1),
+		    Error
+	    end
+    end.
 
 
 open(S=#s {pause = true}) ->
@@ -1067,4 +1101,3 @@ call(Id, Request) when is_integer(Id); is_list(Id) ->
 	Pid when is_pid(Pid) -> gen_server:call(Pid, Request);
 	Error -> Error
     end.
-	    
