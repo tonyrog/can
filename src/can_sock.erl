@@ -25,7 +25,7 @@
 
 -behaviour(gen_server).
 
-%% -define(DEBUG, true).
+%%-define(DEBUG, true).
 -include("../include/can.hrl").
 
 %% API
@@ -42,6 +42,7 @@
 %% Test API
 -export([dump/1]).
 -export([get_link_opts/1]).
+-export([get_netlink_opts/1]).
 
 -define(DEFAULT_BITRATE,  250000).
 -define(DEFAULT_DATARATE, 1000000).
@@ -408,7 +409,6 @@ handle_info({Port,{data,Frame}}, S=#s {receiver = {_Router, _Pid, If}})
     {noreply, S1};
 
 handle_info({netlink,_NRef,Dev,flags,Old0,New0}, S) ->
-    %% ?debug("~w: operstate ~p ~p => ~p\n", [S#s.state,Dev,_Old,New]),
     ?debug("~w: flags ~p ~p => ~p\n", [S#s.state,Dev,Old0,New0]),
     _Old = if Old0 =:= undefined -> undefined;
 	      is_list(Old0) ->
@@ -571,10 +571,10 @@ changeopts_([], false, Acc, S) ->
 
 
 setup(S, Dev)  when S#s.state =:= init; S#s.state =:= change ->
-    Res = set_link_opts(S, Dev),
-    ?debug("set = ~p", [Res]),
-    Res1 = can_sock_link:up(Dev),
-    ?debug("up = ~p", [Res1]),
+    _Res = set_link_opts(S, Dev),
+    ?debug("set = ~p", [_Res]),
+    _Res1 = can_sock_link:up(Dev),
+    ?debug("up = ~p", [_Res1]),
     S#s { state = setup, device_name = Dev }.
 
 running(S) when S#s.state =:= setup ->
@@ -668,6 +668,161 @@ set_link_opts(S, Dev) ->
 			       {listen_only,S#s.listen_only},
 			       {restart_ms,S#s.restart_ms}])
     end.
+
+
+-define(IFLA_CAN_BITTIMING, 1).
+-define(IFLA_CAN_BITTIMING_CONST, 2).
+-define(IFLA_CAN_CLOCK, 3).
+-define(IFLA_CAN_STATE, 4).
+-define(IFLA_CAN_CTRLMODE, 5).
+-define(IFLA_CAN_RESTART_MS, 6).
+-define(IFLA_CAN_RESTART, 7).
+-define(IFLA_CAN_BERR_COUNTER, 8).
+-define(IFLA_CAN_DATA_BITTIMING, 9).
+-define(IFLA_CAN_DATA_BITTIMING_CONST, 10).
+-define(IFLA_CAN_TERMINATION, 11).
+-define(IFLA_CAN_TERMINATION_CONST, 12).
+-define(IFLA_CAN_BITRATE_CONST, 13).
+-define(IFLA_CAN_DATA_BITRATE_CONST, 14).
+-define(IFLA_CAN_BITRATE_MAX, 15).
+
+-define(CAN_STATE_ERROR_ACTIVE, 0).     %% RX/TX error count < 96
+-define(CAN_STATE_ERROR_WARNING, 1).    %% RX/TX error count < 128
+-define(CAN_STATE_ERROR_PASSIVE, 2).    %% RX/TX error count < 256
+-define(CAN_STATE_BUS_OFF, 3).          %% RX/TX error count >= 256
+-define(CAN_STATE_STOPPED, 4).          %% Device is stopped
+-define(CAN_STATE_SLEEPING, 5).
+
+-define(CanBitTiming(Endian,BitRate,SamplePoint,Tq,PropSeg,
+		     PhaseSeg1,PhasSeg2,Sjw,Brp),
+	BitRate:32/Endian,
+	SamplePoint:32/Endian,
+	Tq:32/Endian,
+	PropSeg:32/Endian,
+	PhaseSeg1:32/Endian,
+	PhaseSeg2:32/Endian,
+	Sjw:32/Endian,
+	Brp:32/Endian).
+
+-define(CanBitTimeingConst(Endian,Name,
+			   TSeg1Min, TSeg1Max,
+			   TSeg2Min, TSeg2Max,
+			   SjwMax, 
+			   BrpMin, BrpMax, BrpInc),
+	Name:16/binary, 
+	TSeg1Min:32/Endian, TSeg1Max:32/Endian,
+	TSeg2Min:32/Endian, TSeg2Max:32/Endian,
+	SjwMax:32/Endian,
+	BrpMin:32/Endian, BrpMax:32/Endian, BrpInc:32/Endian).
+	
+
+get_netlink_opts(Dev) ->
+    case netlink:getlinkattr(Dev, linkinfo) of
+	[{linkinfo,Info}] ->
+	    Data = proplists:get_value(data, Info),
+	    TLVs = netlink_codec:decode_tlv_list(Data),
+	    decode_can_tlvs(TLVs);
+	_ ->
+	    false
+    end.
+
+decode_can_tlvs([{?IFLA_CAN_BITTIMING, native,
+		 <<?CanBitTiming(native,BitRate,SamplePoint,Tq,PropSeg,
+				 PhaseSeg1,PhasSeg2,Sjw,Brp)>>} | TLVs]) ->
+    [{bittiming,
+      [
+       {bitrate, BitRate},
+       {sample_point, (SamplePoint/10)/100},
+       {tq, Tq},
+       {prop_seg, PropSeg},
+       {phase_seg1, PhaseSeg1},
+       {phase_seg2, PhaseSeg2},
+       {sjw, Sjw},
+       {brp, Brp}]} | decode_can_tlvs(TLVs)];
+decode_can_tlvs([{?IFLA_CAN_BITTIMING_CONST, native,
+		  <<?CanBitTimeingConst(native,Name,
+					TSeg1Min, TSeg1Max,
+					TSeg2Min, TSeg2Max,
+					SjwMax, 
+					BrpMin, BrpMax, BrpInc)>>} | TLVs]) ->
+    [{bittiming_const,
+      [{name, cstring(Name)},
+       {tseg1_min,TSeg1Min},
+       {tseg1_max, TSeg1Max},
+       {tseg2_min,TSeg2Min},
+       {tseg2_max, TSeg2Max},
+       {sjw_max, SjwMax}, 
+       {brp_min,BrpMin},
+       {brp_max,BrpMax},
+       {brp_inc,BrpInc}]} | decode_can_tlvs(TLVs)];
+decode_can_tlvs([{?IFLA_CAN_CLOCK, native, <<CanClock:32/native>>} | TLVs]) ->
+    [{clock, CanClock} | decode_can_tlvs(TLVs)];
+
+decode_can_tlvs([{?IFLA_CAN_STATE, native, <<CanState:32/native>>} | TLVs]) ->
+    State = case CanState of
+		?CAN_STATE_ERROR_ACTIVE -> active;
+		?CAN_STATE_ERROR_WARNING -> error_warning;
+		?CAN_STATE_ERROR_PASSIVE -> error_passive;
+		?CAN_STATE_BUS_OFF       -> bus_off;
+		?CAN_STATE_STOPPED       -> stopped;
+		?CAN_STATE_SLEEPING      -> sleeping;
+		_ -> CanState
+	    end,
+    [{state, State} | decode_can_tlvs(TLVs)];
+
+decode_can_tlvs([{?IFLA_CAN_CTRLMODE, native,
+		  <<Mask:32/native, Flags:32/native>>} | TLVs]) ->
+    [{ctrlmode,[{mask,Mask},{flags,Flags}]} | decode_can_tlvs(TLVs)];
+decode_can_tlvs([{?IFLA_CAN_RESTART_MS, native,
+		  <<RestartMs:32/native>>} | TLVs]) ->
+    [{restart_ms, RestartMs}  | decode_can_tlvs(TLVs)];
+
+decode_can_tlvs([{?IFLA_CAN_BERR_COUNTER, native,
+		  <<TxErr:16/native, RxErr:16/native>>} | TLVs]) ->
+    [{berr_counter,[{txerr,TxErr},{rxerr,RxErr}]} | decode_can_tlvs(TLVs)];
+
+decode_can_tlvs([{?IFLA_CAN_DATA_BITTIMING, native,
+		 <<?CanBitTiming(native,BitRate,SamplePoint,Tq,PropSeg,
+				 PhaseSeg1,PhasSeg2,Sjw,Brp)>>} | TLVs]) ->
+    [{data_bittiming,
+      [
+       {bitrate, BitRate},
+       {sample_point, (SamplePoint/10)/100},
+       {tq, Tq},
+       {prop_seg, PropSeg},
+       {phase_seg1, PhaseSeg1},
+       {phase_seg2, PhaseSeg2},
+       {sjw, Sjw},
+       {brp, Brp}]} | decode_can_tlvs(TLVs)];
+decode_can_tlvs([{?IFLA_CAN_DATA_BITTIMING_CONST, native,
+		  <<?CanBitTimeingConst(native,Name,
+					TSeg1Min, TSeg1Max,
+					TSeg2Min, TSeg2Max,
+					SjwMax, 
+					BrpMin, BrpMax, BrpInc)>>} | TLVs]) ->
+    [{data_bittiming_const,
+      [{name, cstring(Name)},
+       {tseg1_min,TSeg1Min},
+       {tseg1_max, TSeg1Max},
+       {tseg2_min,TSeg2Min},
+       {tseg2_max, TSeg2Max},
+       {sjw_max, SjwMax}, 
+       {brp_min,BrpMin},
+       {brp_max,BrpMax},
+       {brp_inc,BrpInc}]} | decode_can_tlvs(TLVs)];
+
+decode_can_tlvs([{?IFLA_CAN_BITRATE_MAX, native, <<Rate:32/native>>} | TLVs]) ->
+    [{bitrate_max, Rate} | decode_can_tlvs(TLVs)];
+
+decode_can_tlvs([TLV | TLVs]) ->
+    [TLV | decode_can_tlvs(TLVs)];
+decode_can_tlvs([]) ->
+    [].
+
+
+cstring(<<0,_/binary>>) -> [];
+cstring(<<C,Bin/binary>>) -> [C|cstring(Bin)];
+cstring(<<>>) -> [].
 
 %% Enable/Disable FD frames 
 set_fd(Port,false,_Mtu) ->
