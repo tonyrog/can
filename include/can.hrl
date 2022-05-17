@@ -179,34 +179,22 @@
 
 %% controller specific additional information / data[5..7] 
 
--ifdef(USE_LAGER).
--define(start_logging(), lager:start()).
--define(debug(F), lager:debug((F))).
--define(debug(F,A), lager:debug((F),(A))).
--define(debug(T,F,A), lager:debug((T),(F),(A))).
--define(warning(F), lager:warning((F))).
--define(warning(F,A), lager:warning((F),(A))).
--define(error(F), lager:error((F))).
--define(error(F,A), lager:error((F),(A))).
--define(info(F), lager:info((F))).
--define(info(F,A), lager:info((F),(A))).
--else.
--define(start_logging(), ok).
--ifdef(DEBUG).
--define(debug(T,F,A), io:format((F)++"\n",(A))).
--define(debug(F,A), io:format((F)++"\n",(A))).
--define(debug(F),   io:format((F)++"\n")).
--else.
--define(debug(T,F,A), ok).
--define(debug(F,A), ok).
--define(debug(F),   ok).
--endif.
--define(warning(F), io:format((F)++"\n")).
--define(warning(F,A), io:format((F)++"\n",(A))).
--define(error(F), io:format((F)++"\n")).
--define(error(F,A), io:format((F)++"\n",(A))).
--define(info(F), io:format((F)++"\n")).
--define(info(F,A), io:format((F)++"\n",(A))).
--endif.
+
+%% Macro wrapper!
+
+-include_lib("kernel/include/logger.hrl").
+
+-define(debug(_Format), ?debug(_Format, [])).
+-define(debug(_Format, _Args), ?LOG_DEBUG(_Format, _Args)).
+
+-define(warning(_Format), ?warning(_Format, [])).
+-define(warning(_Format, _Args), ?LOG_WARNING(_Format, _Args)).
+
+-define(info(_Format), ?info(_Format, [])).
+-define(info(_Format, _Args), ?LOG_INFO(_Format, _Args)).
+
+-define(error(_Format), ?error(_Format, [])).
+-define(error(_Format, _Args), ?LOG_ERROR(_Format, _Args)).
+
 
 -endif.

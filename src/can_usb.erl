@@ -612,6 +612,10 @@ open(S0=#s {device = DeviceName, baud_rate = Speed,
 	    _R1 = canusb_set_bitrate(S, BitRate),
 	    _R2 = command_open(S),
 	    send_state(up, S#s.receiver),
+	    Param = #{ device_name => RealDeviceName,
+		       bitrate => BitRate,
+		       fd => false },
+	    send_state(Param, S#s.receiver),
 	    {ok, S};
 	{error, E} when E =:= eaccess;
 			E =:= enoent ->
@@ -655,8 +659,7 @@ send_message(_Mesg, S) when S#s.uart =:= undefined ->
     end,
     {ok, S};
 send_message(Mesg, S) when is_record(Mesg,can_frame) ->
-    ?debug([{tag, frame}],"can_usb:send_message: [~s]", 
-	   [can_probe:format_frame(Mesg)]),
+    ?debug("can_usb:send_message: [~s]", [can_probe:format_frame(Mesg)]),
     if is_binary(Mesg#can_frame.data), not ?is_can_frame_fd(Mesg) ->
 	    send_bin_message(Mesg, Mesg#can_frame.data, S);
        true ->

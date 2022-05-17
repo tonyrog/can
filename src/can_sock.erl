@@ -409,7 +409,6 @@ handle_info({Port,{data,Frame}}, S=#s {receiver = {_Router, _Pid, If}})
     {noreply, S1};
 
 handle_info({netlink,_NRef,Dev,flags,Old0,New0}, S) ->
-    ?debug("~w: flags ~p ~p => ~p\n", [S#s.state,Dev,Old0,New0]),
     _Old = if Old0 =:= undefined -> undefined;
 	      is_list(Old0) ->
 		   case lists:member(up, Old0) of
@@ -424,7 +423,8 @@ handle_info({netlink,_NRef,Dev,flags,Old0,New0}, S) ->
 		      false -> down
 		  end
 	  end,
-    ?verbose("_Old = ~w, New = ~w\n", [_Old, New]),
+    ?debug("   flags ~p ~p => ~p\n", [Dev,Old0,New0]),
+    ?debug("State = ~w, New = ~w, _Old = ~w\n", [S#s.state, New, _Old]),
     case S#s.state of
 	init -> %% init: make sure device is in down stat 
 	    case New of
@@ -459,6 +459,7 @@ handle_info({netlink,_NRef,Dev,flags,Old0,New0}, S) ->
 		    ?debug("setup: other interface ~p up\n",[Dev]),
 		    {noreply, S};
 		down when Dev =:= S#s.device_name ->
+		    send_state(down, S#s.receiver),
 		    {noreply, S#s { state = init, device_name=undefined }};
 		down ->
 		    ?debug("setup: other interface ~p down\n",[Dev]),
@@ -471,6 +472,7 @@ handle_info({netlink,_NRef,Dev,flags,Old0,New0}, S) ->
 	    case New of
 		undefined when Dev =:= S#s.device_name ->  %% interface removed
 		    can_sock_drv:close(S#s.port),
+		    send_state(down, S#s.receiver),
 		    {noreply, S#s { state = init,
 				    port = undefined,
 				    device_name = undefined }};
@@ -481,7 +483,6 @@ handle_info({netlink,_NRef,Dev,flags,Old0,New0}, S) ->
 		    ?debug("running: other interface ~p up\n",[Dev]),
 		    {noreply, S};
 		down when Dev =:= S#s.device_name ->
-		    can_sock_drv:close(S#s.port),
 		    {noreply, setup(S, Dev)};
 		down ->
 		    ?debug("setup: other interface ~p down\n",[Dev]),
@@ -505,8 +506,10 @@ handle_info({netlink,_NRef,Dev,flags,Old0,New0}, S) ->
 		    {noreply, S};
 		down when Dev =:= S#s.device_name ->  %% external down?
 		    can_sock_drv:close(S#s.port),
-		    {noreply, S#s { state = setup,
-				    port = undefined
+		    send_state(down, S#s.receiver),
+		    {noreply, S#s { state = init,
+				    port = undefined,
+				    device_name = undefined
 				  }};
 		down -> %% other interface
 		    ?debug("running: other interface ~p down\n",[Dev]),
@@ -542,6 +545,7 @@ code_change(_OldVsn, State, _Extra) ->
 %% FIXME; device change require new subscription and restart! (and re-join!!)
 %%        name change require update of join Param?
 changeopts(Opts, S) ->
+    ?debug("can_sock: changeopts ~p\n", [Opts]),
     changeopts_(Opts, [], false, S).
 
 changeopts_([{Key,Value}|Opts], Acc, SetLink, S) ->
@@ -564,7 +568,7 @@ changeopts_([{Key,Value}|Opts], Acc, SetLink, S) ->
 	    changeopts_(Opts, SetLink, [{Key,{error,einval}}|Acc],  S)
     end;
 changeopts_([], true, Acc, S) ->
-    can_sock_link:down(S#s.device),
+    can_sock_link:down(S#s.device_name),
     {lists:reverse(Acc), S#s { state = change }};
 changeopts_([], false, Acc, S) ->
     {lists:reverse(Acc), S}.
@@ -596,11 +600,14 @@ running(S) when S#s.state =:= setup ->
 						 [_MtuReason]),
 					  16
 				  end,
-			    _FDRes = set_fd(Port,S#s.fd, Mtu),
+			    FDRes = set_fd(Port,S#s.fd, Mtu),
 			    ?debug("can_sock: fd ~w = ~w, mtu=~w",
-				   [_FDRes, S#s.fd, Mtu]),
+				   [FDRes, S#s.fd, Mtu]),
 			    can_sock_drv:set_error_filter(Port, 16#ff),
 			    send_state(up, S#s.receiver),
+			    Param = #{ device_name => S#s.device_name,
+				       mtu => Mtu, fd => FDRes },
+			    send_state(Param, S#s.receiver),
 			    S#s { state = running, 
 				  port = Port,
 				  mtu = Mtu,
@@ -652,22 +659,30 @@ set_link_opts(S, Dev="vcan"++_) -> %% vcan
 	    can_sock_link:set(Dev, [{mtu, 16}])
     end;
 set_link_opts(S, Dev) ->
-    if S#s.fd ->
-	    can_sock_link:set(Dev,
-			      [{type, "can"},
-			       {fd,S#s.fd},
-			       {bitrate,S#s.bitrate},
-			       {dbitrate,S#s.datarate},
-			       {listen_only,S#s.listen_only},
-			       {restart_ms,S#s.restart_ms}]);
-       true ->
-	    can_sock_link:set(Dev,
-			      [{type, "can"},
-			       {fd,false},
-			       {bitrate,S#s.bitrate},
-			       {listen_only,S#s.listen_only},
-			       {restart_ms,S#s.restart_ms}])
-    end.
+    Fd = if S#s.fd -> true; true -> false end,
+    Res = 
+	if S#s.fd ->
+		can_sock_link:set(Dev,
+				  [{type, "can"},
+				   {fd,Fd},
+				   {bitrate,S#s.bitrate},
+				   {dbitrate,S#s.datarate},
+				   {listen_only,S#s.listen_only},
+				   {restart_ms,S#s.restart_ms}]);
+	   true ->
+		can_sock_link:set(Dev,
+				  [{type, "can"},
+				   {fd,false},
+				   {bitrate,S#s.bitrate},
+				   {listen_only,S#s.listen_only},
+				   {restart_ms,S#s.restart_ms}])
+	end,
+    send_state(#{ fd=>Fd,
+		  bitrate=>S#s.bitrate,
+		  datarate=>S#s.datarate,
+		  listen_only=>S#s.listen_only}, 
+	       S#s.receiver),
+    Res.
 
 
 -define(IFLA_CAN_BITTIMING, 1).
@@ -875,7 +890,7 @@ oerr(Reason,S) ->
 apply_filters(S) ->
     {ok,Filter} = can_filter:list(S#s.fs),
     Fs = [F || {_I,F} <- Filter],
-    %% ?verbose("apply_filters: fs=~p", [Fs]),
+    ?verbose("apply_filters: fs=~p", [Fs]),
     _Res =
 	if Fs =:= [] ->
 		All = #can_filter { id = 0, mask = 0 },
@@ -883,7 +898,7 @@ apply_filters(S) ->
 	   true ->
 		can_sock_drv:set_filters(S#s.port, Fs)
 	end,
-    %% ?verbose("Res = ~p", [_Res]),
+    ?verbose("Res = ~p", [_Res]),
     ok.
 
 join(undefined, Pid, _Arg) when is_pid(Pid) ->

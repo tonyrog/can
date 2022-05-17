@@ -527,8 +527,7 @@ get_family_addr([],_Family) -> {error, enoent}.
 
 
 send_message(Mesg, S) when is_record(Mesg,can_frame) ->
-    ?debug([{tag, frame}],"can_udp:send_message: [~s]", 
-	   [can_probe:format_frame(Mesg)]),
+    ?debug("can_udp:send_message: [~s]", [can_probe:format_frame(Mesg)]),
     if is_binary(Mesg#can_frame.data) ->
 	    send_bin_message(Mesg, Mesg#can_frame.data, S);
        true ->

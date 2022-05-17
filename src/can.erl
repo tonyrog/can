@@ -32,11 +32,11 @@
 -export([pause/0, resume/0, ifstatus/0]).
 -export([pause/1, resume/1, ifstatus/1]).
 
+-export([install_ipset/0]).
+
 -include("../include/can.hrl").
 
 start() ->
-    (catch error_logger:tty(false)),
-    ?start_logging(),
     application:start(uart),
     application:start(can).
 
@@ -185,3 +185,24 @@ send_from(Pid,Frame) when is_record(Frame, can_frame) ->
 
 sync_send_from(Pid,Frame) when is_record(Frame, can_frame) ->
     can_router:sync_send_from(Pid,Frame).
+
+%% Install suid program when needed
+
+%% -define(ASK, "/usr/libexec/seahorse/ssh-askpass").
+%% apt install ssh-askpass
+-define(ASK, "/usr/bin/ssh-askpass").
+%% this is what is used
+%% -define(ASK, "/usr/lib/ssh/x11-ssh-askpass").
+
+install_ipset() ->
+    IpSetExec = filename:join(code:priv_dir(can), "ipset"),
+    HomeBin = filename:join(os:getenv("HOME"), "bin"),
+    file:make_dir(HomeBin),
+    HomeIpSetExec = filename:join(HomeBin, "ipset"),
+    file:copy(IpSetExec, HomeIpSetExec),
+    %% now the dirty trick
+    os:cmd("export SUDO_ASKPASS="++?ASK++"; sudo -A sh -c \"chown root:root "++HomeIpSetExec++" ; chmod +xs "++HomeIpSetExec++"\"").
+
+    
+		  
+    

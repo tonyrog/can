@@ -162,10 +162,10 @@ interface(Id) ->
 	    ?debug("~2w: no such interface\n", [Id]),
 	    {error,enoent};
 	Ifs when is_list(Ifs)->
-	    lager:warning("~p: several interfaces\n", [Ifs]),
+	    ?warning("~p: several interfaces\n", [Ifs]),
 	    {error,not_unique};
 	{error,enoent} ->
-	    lager:debug("~2w: no such interface\n", [Id]),
+	    ?debug("~2w: no such interface\n", [Id]),
 	    {error,enoent};
 	Error ->
 	    Error
@@ -251,13 +251,13 @@ call_if(Id, Request) ->
 	[If] when is_record(If, can_if)->
 	    gen_server:call(If#can_if.pid, Request);
 	[] ->
-	    lager:debug("~2w: no such interface\n", [Id]),
+	    ?debug("~2w: no such interface\n", [Id]),
 	    {error,enoent};
 	Ifs when is_list(Ifs)->
-	    lager:warning("~p: several interfaces\n", [Ifs]),
+	    ?warning("~p: several interfaces\n", [Ifs]),
 	    {error,not_unique};
 	{error,enoent} ->
-	    io:format("~2w: no such interface\n", [Id]),
+	    ?warning("~2w: no such interface\n", [Id]),
 	    {error,enoent};
 	Error ->
 	    Error
@@ -336,10 +336,10 @@ if_state_supervision(OnOff)
     gen_server:call(?SERVER, {supervise, OnOff, self()}).
 
 if_state_event(If, State) 
-  when State =:= up; State =:= down ->
+  when State =:= up; State =:= down; is_map(State) ->
     ?SERVER ! {if_state_event, If, State}.
 if_state_event(Pid, If, State) 
-  when State =:= up; State =:= down ->
+  when State =:= up; State =:= down; is_map(State) ->
     Pid ! {if_state_event, If, State}.
 
 %%--------------------------------------------------------------------
@@ -370,7 +370,6 @@ stop() ->
 %%--------------------------------------------------------------------
 init(Args0) ->
     Args = Args0 ++ application:get_all_env(can),
-    ?start_logging(),  %% ok testing, remain or go?
     process_flag(trap_exit, true),
     start_clock(),
     Wakeup = proplists:get_value(wakeup, Args, false),
@@ -633,9 +632,15 @@ handle_info({if_state_event, Index, State} = _M, S) ->
     case get_interface_by_id(Index) of
 	false ->
 	   ?warning("Recieved ~p from unknown interface",[_M]);
-	If=#can_if {state = SOld, param = P} when SOld =/= State ->
+	If=#can_if {state = SOld, param = P} when is_atom(State),
+						  SOld =/= State ->
 	    set_interface(If#can_if { state = State }),
 	    Msg = {if_state_event, {Index, P}, State},
+	    inform_supervisors(Msg, S#s.supervisors);
+	If=#can_if {state = CurrentState, param = P} when is_map(State) ->
+	    P1 = maps:merge(P, State),
+	    set_interface(If#can_if { param = P1 }),
+	    Msg = {if_state_event, {Index, P1},  CurrentState},
 	    inform_supervisors(Msg, S#s.supervisors);
 	_If ->
 	    ?debug("Recieved ~p, no state change",[_M])
@@ -848,8 +853,7 @@ inform_supervisors(Msg, [{Pid, _Mon} | Sups]) ->
 %% and joined CAN interfaces
 %% 
 broadcast(Sender,Frame,Sync,S) ->
-    ?debug([{tag, frame}],"can_router: broadcast: [~s]", 
-		[can_probe:format_frame(Frame)]),
+    ?debug("can_router: broadcast: [~s]", [can_probe:format_frame(Frame)]),
     S1 = broadcast_apps(Sender, Frame, S#s.apps, S),
     broadcast_ifs(Frame, get_interface_list(), Sync, S1).
 

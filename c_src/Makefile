@@ -18,9 +18,13 @@ all: ../priv/$(APP)_drv.so ../priv/ipset
 ../priv/$(APP)_drv.so: $(OBJS)
 	$(CC) $(LDFLAGS) $(OBJS) $(LIBS) -o ../priv/$(APP)_drv.so
 
-# sudo chown root:root ipset; sudo chmod +s ipset
 ../priv/ipset: ipset.o
 	$(CC) ipset.o -o $@
+	@echo "do not forget to install the ipset command"
+
+install:
+	sudo chown root:root ../priv/ipset
+	sudo chmod +s ../priv/ipset
 
 %.o:	%.c
 	$(CC) $(CFLAGS) -c -fPIC $<
