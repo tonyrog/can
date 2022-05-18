@@ -292,13 +292,17 @@ init([Id,Opts]) ->
 	    Param = #{ mod => ?MODULE,
 		       device => Device,
 		       index => Id,
-		       name => Name,
+		       name => Name,  %% mod-<id>
+		       bitrates => ?SUPPORTED_BITRATES,
+		       datarate => 0,
+		       datarates => ?SUPPORTED_DATARATES,
+		       listen_only => false,
 		       fd => false },
 	    case join(Router, Pid, Param) of
-		{ok, If} when is_integer(If) ->
-		    ?debug("can_usb:joined: intf=~w", [If]),
+		{ok, Id} when is_integer(Id) ->
+		    ?debug("can_usb:joined: intface id=~w", [Id]),
 		    S = #s{ name = Name,
-			    receiver={Router,Pid,If},
+			    receiver={Router,Pid,Id},
 			    device = Device,
 			    offset = Id,
 			    baud_rate = Speed,
@@ -611,11 +615,12 @@ open(S0=#s {device = DeviceName, baud_rate = Speed,
 	    canusb_sync_close(S),
 	    _R1 = canusb_set_bitrate(S, BitRate),
 	    _R2 = command_open(S),
-	    send_state(up, S#s.receiver),
 	    Param = #{ device_name => RealDeviceName,
 		       bitrate => BitRate,
-		       fd => false },
+		       fd => false
+		     },
 	    send_state(Param, S#s.receiver),
+	    send_state(up, S#s.receiver),
 	    {ok, S};
 	{error, E} when E =:= eaccess;
 			E =:= enoent ->
@@ -934,10 +939,10 @@ parse_(IDs,Len,Ext,Rtr,Ds,S) ->
     end.
     
 
-parse_message(ID,Len,Ext,Rtr,Ds,S=#s {receiver = {_Module, _Pid, If}}) ->
+parse_message(ID,Len,Ext,Rtr,Ds,S=#s {receiver = {_Module, _Pid, Id}}) ->
     case parse_data(Len,Rtr,Ds,[]) of
 	{ok,Data,Ts,More} ->
-	    try can:create(ID,Len,Ext,Rtr,false,If,Data,Ts) of
+	    try can:create(ID,Len,Ext,Rtr,false,Id,Data,Ts) of
 		Frame ->
 		    S1 = input(Frame, S#s {buf=More}),
 		    parse(More,[],S1)
@@ -997,19 +1002,22 @@ input(Frame, S=#s {receiver = Receiver, fs = Fs}) ->
 	    count(filter_frames, S1)
     end.
 
-input_frame(Frame, {undefined, Pid, _If}) when is_pid(Pid) ->
+input_frame(Frame, {undefined, Pid, _Id}) when is_pid(Pid) ->
     Pid ! Frame;
-input_frame(Frame,{Module, undefined, _If}) when is_atom(Module) ->
+input_frame(Frame,{Module, undefined, _Id}) when is_atom(Module) ->
     Module:input(Frame);
-input_frame(Frame,{Module, Pid, _If}) when is_atom(Module), is_pid(Pid) ->
+input_frame(Frame,{Module, Pid, _Id}) when is_atom(Module), is_pid(Pid) ->
     Module:input(Pid, Frame).
 
-send_state(State, {undefined, Pid, If}) when is_pid(Pid) ->
-    Pid ! {if_state_event, If, State};
-send_state(State,{Module, undefined, If}) when is_atom(Module) ->
-    Module:if_state_event(If, State);
-send_state(State,{Module, Pid, If}) when is_atom(Module), is_pid(Pid) ->
-    Module:if_state_event(Pid, If, State).
+send_state(State, {undefined, Pid, Id}) 
+  when is_integer(Id), is_pid(Pid) ->
+    Pid ! {if_state_event, Id, State};
+send_state(State,{Module, undefined, Id}) when 
+      is_integer(Id), is_atom(Module) ->
+    Module:if_state_event(Id, State);
+send_state(State,{Module, Pid, Id}) when 
+      is_integer(Id), is_atom(Module), is_pid(Pid) ->
+    Module:if_state_event(Pid, Id, State).
 
 %% Error codes return by CANUSB
 -define(CANUSB_ERROR_RECV_FIFO_FULL,   16#01).

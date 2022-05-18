@@ -271,10 +271,14 @@ init([BusId, Opts]) ->
 			       device => MAddr,
 			       index => BusId,
 			       name => Name,
+			       bitrates => ?SUPPORTED_BITRATES,
+			       datarate => 0,
+			       datarates => ?SUPPORTED_DATARATES,
+			       listen_only => false,
 			       fd => FD },
 		    case join(Router, Pid, Param) of
-			{ok, If} when is_integer(If) ->
-			    Receiver = {Router,Pid,If},
+			{ok, Id} when is_integer(Id) ->
+			    Receiver = {Router,Pid,Id},
 			    send_state(up, Receiver),
 			    {ok, #s{ receiver=Receiver,
 				     in=In,
@@ -595,12 +599,15 @@ adjust_fd_len(Len) when Len =< 32 -> 32;
 adjust_fd_len(Len) when Len =< 48 -> 48;
 adjust_fd_len(Len) when Len =< 64 -> 64.
 
-send_state(State, {undefined, Pid, If}) when is_pid(Pid) ->
-    Pid ! {if_state_event, If, State};
-send_state(State,{Module, undefined, If}) when is_atom(Module) ->
-    Module:if_state_event(If, State);
-send_state(State,{Module, Pid, If}) when is_atom(Module), is_pid(Pid) ->
-    Module:if_state_event(Pid, If, State).
+send_state(State, {undefined, Pid, Id}) when
+      is_integer(Id), is_pid(Pid) ->
+    Pid ! {if_state_event, Id, State};
+send_state(State,{Module, undefined, Id}) when
+      is_integer(Id), is_atom(Module) ->
+    Module:if_state_event(Id, State);
+send_state(State,{Module, Pid, Id}) when 
+      is_integer(Id), is_atom(Module), is_pid(Pid) ->
+    Module:if_state_event(Pid, Id, State).
 
 count(Counter,S) ->
     can_counter:update(Counter, 1),

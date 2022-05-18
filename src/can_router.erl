@@ -68,12 +68,13 @@
 
 -record(can_if,
 	{
-	 pid,        %% can interface pid
-	 id,         %% interface id
-	 name,       %% name for easier identification
-	 mon,        %% can app monitor
-	 param :: ifparam(),  %% match param normally {Mod,Device,Index,Name}
-	 atime,      %% last input activity time
+	 pid   :: pid(),        %% can interface pid
+	 mod   :: atom(),       %% current
+	 id    :: integer(),    %% interface id
+	 name  :: string(),     %% name for easier identification
+	 mon   :: reference(),  %% can app monitor
+	 param :: ifparam(),    %% all params
+	 atime,                 %% last input activity time
 	 state = undefined
 	}).
 
@@ -331,16 +332,16 @@ config_change(Changed,New,Removed) ->
     gen_server:call(?SERVER, {config_change,Changed,New,Removed}).
 
 %% Supervise
-if_state_supervision(OnOff) 
-  when OnOff =:= on; OnOff =:= off ->
-    gen_server:call(?SERVER, {supervise, OnOff, self()}).
+if_state_supervision(Value) 
+  when Value =:= on; Value =:= off; Value =:= refresh ->
+    gen_server:call(?SERVER, {supervise, Value, self()}).
 
-if_state_event(If, State) 
-  when State =:= up; State =:= down; is_map(State) ->
-    ?SERVER ! {if_state_event, If, State}.
-if_state_event(Pid, If, State) 
-  when State =:= up; State =:= down; is_map(State) ->
-    Pid ! {if_state_event, If, State}.
+if_state_event(Id, State) 
+  when is_integer(Id), State =:= up; State =:= down; is_map(State) ->
+    ?SERVER ! {if_state_event, Id, State}.
+if_state_event(Pid, Id, State) 
+  when is_integer(Id), State =:= up; State =:= down; is_map(State) ->
+    Pid ! {if_state_event, Id, State}.
 
 %%--------------------------------------------------------------------
 %% Shortcut API
@@ -560,6 +561,11 @@ handle_call({list_filter,Pid}, _From, S) when is_pid(Pid) ->
 	    {reply, can_filter:list(App#can_app.fs), S}
     end;
 
+handle_call({supervise, refresh, Pid} = _M, _From, S) ->
+    ?debug("message ~p", [_M]),
+    current_state(Pid, get_interface_list()),
+    {reply, ok, S};
+
 handle_call({supervise, on, Pid} = _M, _From, S=#s {supervisors = Sups}) ->
     ?debug("message ~p", [_M]),
     case lists:keyfind(Pid, 1, Sups) of
@@ -626,21 +632,23 @@ handle_cast(_Msg, S) ->
 %%                                       {stop, Reason, State}
 %% Description: Handling all non call/cast messages
 %%--------------------------------------------------------------------
-handle_info({if_state_event, Index, State} = _M, S) ->
+handle_info({if_state_event, Id, State} = _M, S) ->
     %% interface state changes reported by the interface processes
     ?debug("~p",[_M]),
-    case get_interface_by_id(Index) of
+    case get_interface_by_id(Id) of
 	false ->
 	   ?warning("Recieved ~p from unknown interface",[_M]);
 	If=#can_if {state = SOld, param = P} when is_atom(State),
 						  SOld =/= State ->
-	    set_interface(If#can_if { state = State }),
-	    Msg = {if_state_event, {Index, P}, State},
+	    P1 = P#{ pid => If#can_if.pid, mod => If#can_if.mod },
+	    set_interface(If#can_if { state = State, param = P1 }),
+	    Msg = {if_state_event, {Id, P1}, State},
 	    inform_supervisors(Msg, S#s.supervisors);
 	If=#can_if {state = CurrentState, param = P} when is_map(State) ->
 	    P1 = maps:merge(P, State),
-	    set_interface(If#can_if { param = P1 }),
-	    Msg = {if_state_event, {Index, P1},  CurrentState},
+	    P2 = P1#{ pid => If#can_if.pid, mod => If#can_if.mod },
+	    set_interface(If#can_if { param = P2 }),
+	    Msg = {if_state_event, {Id, P2},  CurrentState},
 	    inform_supervisors(Msg, S#s.supervisors);
 	_If ->
 	    ?debug("Recieved ~p, no state change",[_M])
@@ -749,10 +757,12 @@ add_if(Pid,Param,S) ->
     Mon = erlang:monitor(process, Pid),
     ID = S#s.if_count,
     ATime =  read_clock() + S#s.wakeup_timeout,
-    If = #can_if { pid=Pid, id=ID, mon=Mon, param=Param, atime = ATime },
+    Mod = maps:get(mod, Param, undefined),
+    If = #can_if { pid=Pid, mod=Mod, id=ID, mon=Mon, 
+		   param=Param, atime = ATime },
     set_interface(If),
     S1 = S#s { if_count = ID+1 },
-    link(Pid),
+    link(Pid),   %% FIME! montior? we alread have a monitor!
     {ID, S1}.
 
 %% ugly but less admin for now
@@ -781,8 +791,19 @@ get_interface_by_name(Name) ->
 			Acc
 		end, [], get_interface_list()).
 
-get_interface_by_param(Param) when is_map(Param) ->
-    lists:keyfind(Param, #can_if.param, get_interface_list()).
+%% get interface by local index and module (from config)
+get_interface_by_param(#{ mod := Mod, index := Index }) ->
+    get_interface_by_param_(Mod, Index, get_interface_list()).
+
+get_interface_by_param_(Mod, Index, [IF|IFs]) ->
+    case IF of
+	#{ mod := Mod, index := Index } ->
+	    {value, IF};
+	_ ->
+	    get_interface_by_param_(Mod, Index, IFs)
+    end;
+get_interface_by_param_(_Mod, _Index, []) ->
+    false.
 
 get_interface_by_pid(Pid) ->
     lists:keyfind(Pid, #can_if.pid, get_interface_list()).

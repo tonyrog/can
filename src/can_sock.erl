@@ -239,6 +239,11 @@ init([BusId,Opts]) ->
 	       device => Device,
 	       index => BusId,
 	       name => Name,
+	       bitrate => BitRate,
+	       datarate => DataRate,
+	       bitrates => BitRates,
+	       datarates => DataRates,
+	       listen_only => ListenOnly,
 	       fd => FD },
     case join(Router, Pid, Param) of
 	{ok, If} when is_integer(If) ->
@@ -604,10 +609,10 @@ running(S) when S#s.state =:= setup ->
 			    ?debug("can_sock: fd ~w = ~w, mtu=~w",
 				   [FDRes, S#s.fd, Mtu]),
 			    can_sock_drv:set_error_filter(Port, 16#ff),
-			    send_state(up, S#s.receiver),
 			    Param = #{ device_name => S#s.device_name,
 				       mtu => Mtu, fd => FDRes },
 			    send_state(Param, S#s.receiver),
+			    send_state(up, S#s.receiver),
 			    S#s { state = running, 
 				  port = Port,
 				  mtu = Mtu,
@@ -935,12 +940,12 @@ input_frame(Frame,{Module, undefined, _If}) when is_atom(Module) ->
 input_frame(Frame,{Module, Pid, _If}) when is_atom(Module), is_pid(Pid) ->
     Module:input(Pid,Frame).
 
-send_state(State, {undefined, Pid, If}) when is_pid(Pid) ->
-    Pid ! {if_state_event, If, State};
-send_state(State,{Module, undefined, If}) when is_atom(Module) ->
-    Module:if_state_event(If, State);
-send_state(State,{Module, Pid, If}) when is_atom(Module), is_pid(Pid) ->
-    Module:if_state_event(Pid, If, State).
+send_state(State, {undefined, Pid, Id}) when is_pid(Pid) ->
+    Pid ! {if_state_event, Id, State};
+send_state(State,{Module, undefined, Id}) when is_atom(Module) ->
+    Module:if_state_event(Id, State);
+send_state(State,{Module, Pid, Id}) when is_atom(Module), is_pid(Pid) ->
+    Module:if_state_event(Pid, Id, State).
 
 call(Pid, Request) when is_pid(Pid) -> 
     gen_server:call(Pid, Request);
