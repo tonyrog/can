@@ -32,7 +32,7 @@
 -export([pause/0, resume/0, ifstatus/0]).
 -export([pause/1, resume/1, ifstatus/1]).
 
--export([install_ipset/0]).
+-export([install/0]).
 
 -include("../include/can.hrl").
 
@@ -186,7 +186,7 @@ send_from(Pid,Frame) when is_record(Frame, can_frame) ->
 sync_send_from(Pid,Frame) when is_record(Frame, can_frame) ->
     can_router:sync_send_from(Pid,Frame).
 
-%% Install suid program when needed
+%% Install suid program when needed, can be used from appimage.
 
 %% -define(ASK, "/usr/libexec/seahorse/ssh-askpass").
 %% apt install ssh-askpass
@@ -194,7 +194,7 @@ sync_send_from(Pid,Frame) when is_record(Frame, can_frame) ->
 %% this is what is used
 %% -define(ASK, "/usr/lib/ssh/x11-ssh-askpass").
 
-install_ipset() ->
+install() ->
     IpSetExec = filename:join(code:priv_dir(can), "ipset"),
     HomeBin = filename:join(os:getenv("HOME"), "bin"),
     file:make_dir(HomeBin),
@@ -202,7 +202,3 @@ install_ipset() ->
     file:copy(IpSetExec, HomeIpSetExec),
     %% now the dirty trick
     os:cmd("export SUDO_ASKPASS="++?ASK++"; sudo -A sh -c \"chown root:root "++HomeIpSetExec++" ; chmod +xs "++HomeIpSetExec++"\"").
-
-    
-		  
-    
