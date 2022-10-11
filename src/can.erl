@@ -32,7 +32,7 @@
 -export([pause/0, resume/0, ifstatus/0]).
 -export([pause/1, resume/1, ifstatus/1]).
 
--export([install/0]).
+-export([install/0, install_cmds/0]).
 
 -include("../include/can.hrl").
 
@@ -194,11 +194,17 @@ sync_send_from(Pid,Frame) when is_record(Frame, can_frame) ->
 %% this is what is used
 %% -define(ASK, "/usr/lib/ssh/x11-ssh-askpass").
 
-install() ->
+%% return install commands to run
+install_cmds() ->
     IpSetExec = filename:join(code:priv_dir(can), "ipset"),
     HomeBin = filename:join(os:getenv("HOME"), "bin"),
-    file:make_dir(HomeBin),
     HomeIpSetExec = filename:join(HomeBin, "ipset"),
-    file:copy(IpSetExec, HomeIpSetExec),
-    %% now the dirty trick
-    os:cmd("export SUDO_ASKPASS="++?ASK++"; sudo -A sh -c \"chown root:root "++HomeIpSetExec++" ; chmod +xs "++HomeIpSetExec++"\"").
+    User = ["mkdir -p "++HomeBin, "cp "++IpSetExec++" "++HomeIpSetExec],
+    Admin = ["chown root:root "++HomeIpSetExec, "chmod +xs "++HomeIpSetExec],
+    {User, Admin}.
+
+install() ->
+    {User,Admin} = install_cmds(),
+    os:cmd(string:join(User, ";")),
+    os:cmd("export SUDO_ASKPASS="++?ASK++"; sudo -A sh -c \""++
+	       string:join(Admin, ";"), "\"").

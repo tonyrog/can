@@ -257,11 +257,11 @@ setopts(Id, Opts) ->
 %%
 %%--------------------------------------------------------------------
 
-init([Id,Opts]) ->
+init([BusId,Opts]) ->
     Device = case proplists:get_value(device, Opts) of
 		 undefined ->
 		     %% try environment
-		     os:getenv("CANUSB_DEVICE_" ++ integer_to_list(Id));
+		     os:getenv("CANUSB_DEVICE_" ++ integer_to_list(BusId));
 		 D -> D
 	     end,
     if Device =:= false; Device =:= "" ->
@@ -270,7 +270,7 @@ init([Id,Opts]) ->
        true ->
 	    Name = proplists:get_value(name, Opts,
 				       atom_to_list(?MODULE) ++ "-" ++
-					   integer_to_list(Id)),
+					   integer_to_list(BusId)),
 	    Router = proplists:get_value(router, Opts, can_router),
 	    Pid = proplists:get_value(receiver, Opts, undefined),
 	    RetryInterval = proplists:get_value(retry_interval,Opts,
@@ -291,7 +291,7 @@ init([Id,Opts]) ->
 		    end,
 	    Param = #{ mod => ?MODULE,
 		       device => Device,
-		       index => Id,
+		       index => BusId,
 		       name => Name,  %% mod-<id>
 		       bitrates => ?SUPPORTED_BITRATES,
 		       datarate => 0,
@@ -299,12 +299,12 @@ init([Id,Opts]) ->
 		       listen_only => false,
 		       fd => false },
 	    case join(Router, Pid, Param) of
-		{ok, Id} when is_integer(Id) ->
-		    ?debug("can_usb:joined: intface id=~w", [Id]),
+		{ok, If} when is_integer(If) ->
+		    ?debug("can_usb:joined: intface id=~w", [If]),
 		    S = #s{ name = Name,
-			    receiver={Router,Pid,Id},
+			    receiver={Router,Pid,If},
 			    device = Device,
-			    offset = Id,
+			    offset = If,
 			    baud_rate = Speed,
 			    can_speed = BitRate,
 			    status_interval = Interval,

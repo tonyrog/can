@@ -277,8 +277,8 @@ init([BusId, Opts]) ->
 			       listen_only => false,
 			       fd => FD },
 		    case join(Router, Pid, Param) of
-			{ok, Id} when is_integer(Id) ->
-			    Receiver = {Router,Pid,Id},
+			{ok, If} when is_integer(If) ->
+			    Receiver = {Router,Pid,If},
 			    send_state(up, Receiver),
 			    {ok, #s{ receiver=Receiver,
 				     in=In,
