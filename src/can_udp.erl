@@ -94,6 +94,8 @@
 -define(SUPPORTED_DATARATES, [10000,20000,50000,100000,125000,
 			      250000,500000,800000,1000000,
 			      2000000,3000000,4000000,5000000]).
+-define(DEFAULT_BIT_RATE, 250000).
+-define(DEFAULT_DATA_RATE, 1000000).
 			      
 
 -type can_udp_optname() ::
@@ -271,8 +273,9 @@ init([BusId, Opts]) ->
 			       device => MAddr,
 			       index => BusId,
 			       name => Name,
+			       bitrate => ?DEFAULT_BIT_RATE,
 			       bitrates => ?SUPPORTED_BITRATES,
-			       datarate => 0,
+			       datarate => ?DEFAULT_DATA_RATE,
 			       datarates => ?SUPPORTED_DATARATES,
 			       listen_only => false,
 			       fd => FD },
