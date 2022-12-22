@@ -54,11 +54,11 @@ ipset(Cmd, Dev, Args) ->
 ipset_exec() ->
     Command1 = filename:join(code:priv_dir(can), "ipset"),
     Command2 = filename:join([os:getenv("HOME"),"bin","ipset"]),
-    case is_suid(Command1) of
-	true -> Command1;
+    case is_suid(Command2) of
+	true -> Command2;
 	false ->
-	    case is_suid(Command2) of
-		true -> Command2;
+	    case is_suid(Command1) of
+		true -> Command1;
 		false -> false
 	    end
     end.
