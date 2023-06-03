@@ -273,7 +273,7 @@ static ErlDrvData can_sock_drv_start(ErlDrvPort port, char* command)
     drv_ctx_t* ctx = NULL;
     int s;
 
-    if ((s = socket(PF_CAN, SOCK_RAW, CAN_RAW)) < 0)
+    if ((s = socket(PF_CAN, SOCK_RAW|SOCK_NONBLOCK, CAN_RAW)) < 0)
 	return ERL_DRV_ERROR_ERRNO;
 
     set_port_control_flags(port, PORT_CONTROL_FLAG_BINARY);
@@ -341,7 +341,7 @@ static ErlDrvSSizeT can_sock_drv_ctl(ErlDrvData d,
 {
     drv_ctx_t* ctx = (drv_ctx_t*) d;
 
-    DEBUGF("can_sock_drv: ctl: cmd=%u(%s), len=%d", 
+    DEBUGF("ctl: cmd=%u(%s), len=%d", 
 	   cmd, format_command(cmd), len);
 
     switch(cmd) {
@@ -522,6 +522,7 @@ static ErlDrvSSizeT can_sock_drv_ctl(ErlDrvData d,
 		int r = send_frame(ctx, &xframe);
 		if ((r < 0) && (errno == EAGAIN)) {
 		    driver_enq(ctx->port, (char*)&xframe, sizeof(xframe));
+		    DEBUGF("enq frame size=%ld",  driver_sizeq(ctx->port));
 		    driver_select(ctx->port,ctx->sock,ERL_DRV_WRITE,1);
 		    return ctl_reply_ok(rbuf, rsize);
 		}
@@ -530,6 +531,7 @@ static ErlDrvSSizeT can_sock_drv_ctl(ErlDrvData d,
 	    }
 	    else {
 		driver_enq(ctx->port, (char*) &xframe, sizeof(xframe));
+		DEBUGF("enq frame size=%ld",  driver_sizeq(ctx->port));		
 	    }
 	    return ctl_reply_ok(rbuf, rsize);
 	}
@@ -553,7 +555,7 @@ static void can_sock_drv_output(ErlDrvData d, char* buf, ErlDrvSizeT len)
     (void) d;
     (void) buf;
     (void) len;
-    DEBUGF("can_sock_drv: output");
+    DEBUGF("output");
 }
 
 static void can_sock_drv_ready_input(ErlDrvData d, ErlDrvEvent e)
@@ -565,14 +567,14 @@ static void can_sock_drv_ready_input(ErlDrvData d, ErlDrvEvent e)
     socklen_t len = sizeof(addr);
     int n;
 
-    DEBUGF("can_sock_drv: ready_input called");
+    DEBUGF("ready_input called");
 
     n = recvfrom(INT_EVENT(ctx->sock), &frame, sizeof(frame), 0,
 		 (struct sockaddr*) &addr, &len);
     if ((n == CAN_MTU) || (n == CANFD_MTU)) {
 	ErlDrvTermData frame_type = (n == CANFD_MTU) ?
 	    ATOM(canfd_frame) : ATOM(can_frame);
-	DEBUGF("can_sock_drv: ready_input got %sframe",
+	DEBUGF("ready_input got %sframe",
 	       (n == CANFD_MTU) ? "FD " : "");
 	// Format as: {Port,{data,#can_frame{}}}
 	ErlDrvTermData spec[] = {
@@ -597,7 +599,7 @@ static void can_sock_drv_ready_output(ErlDrvData d, ErlDrvEvent e)
 {
     drv_ctx_t* ctx = (drv_ctx_t*) d;
     (void) e;
-    DEBUGF("can_sock_drv: ready_output");
+    DEBUGF("ready_output");
     ErlIOVec ev;
     int n;
 
@@ -615,6 +617,9 @@ static void can_sock_drv_ready_output(ErlDrvData d, ErlDrvEvent e)
 	    return;
 	}
 	driver_deq(ctx->port, sizeof(xframe));
+
+	DEBUGF("deq frame size=%ld", driver_sizeq(ctx->port));
+
 	n -= sizeof(xframe);
     }
     if (n == 0)

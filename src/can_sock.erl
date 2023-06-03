@@ -867,7 +867,7 @@ send_message(_Mesg, S) when S#s.port =:= undefined ->
     end,
     {ok,S};
 send_message(Mesg, S) when is_record(Mesg,can_frame) ->
-    case can_sock_drv:send(S#s.port,S#s.intf,Mesg) of
+    case can_sock_drv:send(S#s.port,S#s.index,Mesg) of
 	ok ->
 	    S1 = count(output_frames, S),
 	    {ok,S1};

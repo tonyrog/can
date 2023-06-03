@@ -33,6 +33,7 @@
 -export([pause/1, resume/1, ifstatus/1]).
 
 -export([install/0, install_cmds/0]).
+-export([format_error_frame/1, print_error_frame/1]).
 
 -include("../include/can.hrl").
 
@@ -208,3 +209,6 @@ install() ->
     os:cmd(string:join(User, ";")),
     os:cmd("export SUDO_ASKPASS="++?ASK++"; sudo -A sh -c \""++
 	       string:join(Admin, ";"), "\"").
+
+format_error_frame(Frame) -> can_router:format_error_frame(Frame).
+print_error_frame(Frame) -> can_router:print_error_frame(Frame).

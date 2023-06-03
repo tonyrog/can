@@ -54,6 +54,8 @@
 -export([getopts/2, setopts/2, optnames/0]).
 -export([pause/1, resume/1, ifstatus/1]).
 
+%% Util
+-export([low_latency/0]).
 %% Test API
 -export([dump/1]).
 %% -compile(export_all).
@@ -1112,3 +1114,12 @@ call(Id, Request) when is_integer(Id); is_list(Id) ->
 	Pid when is_pid(Pid) -> gen_server:call(Pid, Request);
 	Error -> Error
     end.
+
+%% utility (linux) require setserial command!!
+
+low_latency() ->
+    lists:foreach(
+      fun(UsbDev) ->
+	      %% ignore output since only FTDI devices will return ok
+	      os:cmd("setserial "++UsbDev++" low_latency")
+      end, filelib:wildcard("/dev/ttyUSB*")).

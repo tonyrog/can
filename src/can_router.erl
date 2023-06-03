@@ -45,6 +45,9 @@
 -export([if_state_supervision/1]).
 -export([if_state_event/2, if_state_event/3]).
 -export([getopts/2, setopts/2]).
+%% utils
+-export([format_error_frame/1]).
+-export([print_error_frame/1]).
 %% gen_server callbacks
 -export([init/1, 
 	 handle_call/3, 
@@ -606,6 +609,7 @@ handle_call(_Request, _From, S) ->
 handle_cast({input,Pid,Frame}, S) 
   when is_pid(Pid),is_record(Frame, can_frame) ->
     if ?is_can_frame_err(Frame) ->
+	    %% print_error_frame(Frame),  %% debug!!
 	    S1 = count(stat_err, S),
 	    S2 = broadcast_error(Frame, S#s.apps, S1),
 	    {noreply, S2};
@@ -931,3 +935,141 @@ add_filters_([_|_], _Fs, _Is) ->
     {error,badarg};
 add_filters_([], Fs, Is) ->
     {ok,Fs,Is}.
+
+-define(ite(Cond,Then,Else),
+	if (Cond) -> (Then);
+	   true -> (Else)
+	end).
+		 
+format_error_frame(Frame) when ?is_can_frame_err(Frame) ->
+    ID = Frame#can_frame.id,
+    Data = Frame#can_frame.data,
+    List = 
+	lists:append(
+	  [format_err(ID),
+	   ?ite(ID band ?CAN_ERR_LOSTARB =/= 0,format_err_lostarb(Data),[]),
+	   ?ite(ID band ?CAN_ERR_CRTL =/= 0, format_err_crtl(Data), []),
+	   ?ite(ID band ?CAN_ERR_PROT =/= 0, format_err_prot(Data), []),
+	   ?ite(ID band ?CAN_ERR_PROT =/= 0, format_err_prot_loc(Data), []),
+	   ?ite(ID band ?CAN_ERR_TRX =/= 0, format_err_trx_canh(Data), []),
+	   ?ite(ID band ?CAN_ERR_TRX =/= 0, format_err_trx_canl(Data), [])
+	  ]),
+    io_lib:format("~w\n", [List]);
+format_error_frame(_Frame) ->
+    "ok".
+
+format_err(ID) ->
+    ErrorEnum = [{?CAN_ERR_TX_TIMEOUT,  txtimeout},
+		 {?CAN_ERR_LOSTARB,     lostarb},
+		 {?CAN_ERR_CRTL,        crtl},
+		 {?CAN_ERR_PROT,        prot},
+		 {?CAN_ERR_TRX,         trx},
+		 {?CAN_ERR_ACK,         ack},
+		 {?CAN_ERR_BUSOFF,      busoff},
+		 {?CAN_ERR_BUSERROR,    buserror},
+		 {?CAN_ERR_RESTARTED,   restarted}],
+    [{err,format_bit_flags(ID, ErrorEnum)}].
+
+%% byte 0
+format_err_lostarb(<<Bit,_/binary>>) -> 
+    [{lostarb,[{bit,Bit}]}];
+format_err_lostarb(_) -> 
+    [].
+
+%% byte 1
+format_err_crtl(<<_,Crtl,_/binary>>) ->
+    StatusEnum = [{?CAN_ERR_CRTL_RX_OVERFLOW,rx_overflow},
+		  {?CAN_ERR_CRTL_TX_OVERFLOW,tx_overflow},
+		  {?CAN_ERR_CRTL_RX_WARNING, rx_warning},
+		  {?CAN_ERR_CRTL_TX_WARNING, rx_warning},
+		  {?CAN_ERR_CRTL_RX_PASSIVE, rx_passive},
+		  {?CAN_ERR_CRTL_TX_PASSIVE, tx_passive}],
+    [{crtl,format_bit_flags(Crtl, StatusEnum)}];
+format_err_crtl(_) -> [].
+
+%% error in CAN protocol (type) / data[2] 
+format_err_prot(<<_,_,Type,_/binary>>) ->
+    TypeEnum = 
+	[
+	 {?CAN_ERR_PROT_UNSPEC, unspecified},
+	 {?CAN_ERR_PROT_BIT,single_bit_error},
+	 {?CAN_ERR_PROT_FORM, frame_format_error},
+	 {?CAN_ERR_PROT_STUFF, bit_stuffing_error},
+	 {?CAN_ERR_PROT_BIT0,  unable_to_send_dominant_bit},
+	 {?CAN_ERR_PROT_BIT1,  unable_to_send_recessive_bit},
+	 {?CAN_ERR_PROT_OVERLOAD,  bus_overload},
+	 {?CAN_ERR_PROT_ACTIVE,  active_error_announcement},
+	 {?CAN_ERR_PROT_TX,      error_occured_on_transmission}
+	],
+    [{prot, format_enum(Type, TypeEnum)}];
+format_err_prot(_) -> [].
+
+
+%% error in CAN protocol (location) / data[3] 
+format_err_prot_loc(<<_,_,_,Loc,_/binary>>) ->
+    LocEnum = 
+	[
+	 {?CAN_ERR_PROT_LOC_UNSPEC, unspecified},
+	 {?CAN_ERR_PROT_LOC_SOF, start_of_frame},
+	 {?CAN_ERR_PROT_LOC_ID28_21, id_bits_28_21}, %% (SFF: 10 - 3) 
+	 {?CAN_ERR_PROT_LOC_ID20_18, id_bits_20_18}, %% (SFF: 2 - 0 )
+	 {?CAN_ERR_PROT_LOC_SRTR,   substitute_rtr}, %% (SFF: RTR) 
+	 {?CAN_ERR_PROT_LOC_IDE,    identifier_extension},
+	 {?CAN_ERR_PROT_LOC_ID17_13, id_bits_17_13},
+	 {?CAN_ERR_PROT_LOC_ID12_05, id_bits_12_5},
+	 {?CAN_ERR_PROT_LOC_ID04_00, id_bits_4_0},
+	 {?CAN_ERR_PROT_LOC_RTR,     rtr},
+	 {?CAN_ERR_PROT_LOC_RES1,   reserved_bit_1},
+	 {?CAN_ERR_PROT_LOC_RES0,   reserved_bit_0},
+	 {?CAN_ERR_PROT_LOC_DLC,    dlc},
+	 {?CAN_ERR_PROT_LOC_DATA,   data},
+	 {?CAN_ERR_PROT_LOC_CRC_SEQ, crc_seq},
+	 {?CAN_ERR_PROT_LOC_CRC_DEL, crc_del},
+	 {?CAN_ERR_PROT_LOC_ACK,    ack},
+	 {?CAN_ERR_PROT_LOC_ACK_DEL,ack_del},
+	 {?CAN_ERR_PROT_LOC_EOF,    eof},
+	 {?CAN_ERR_PROT_LOC_INTERM, interm}],
+    [{prot_loc, format_enum(Loc, LocEnum)}];
+format_err_prot_loc(_) ->
+    [].
+
+%% error status of CAN-transceiver / data[4]     
+format_err_trx_canh(<<_,_,_,_,Trx,_/binary>>) ->
+    CanH = [{?CAN_ERR_TRX_UNSPEC, unspecified},
+	    {?CAN_ERR_TRX_CANH_NO_WIRE, canh_no_wire},
+	    {?CAN_ERR_TRX_CANH_SHORT_TO_BAT, canh_short_to_bat},
+	    {?CAN_ERR_TRX_CANH_SHORT_TO_VCC, canh_short_to_vcc},
+	    {?CAN_ERR_TRX_CANH_SHORT_TO_GND, canh_short_to_gnd}],
+    [{trx_canh, format_enum(Trx band 16#f0, CanH)}];
+format_err_trx_canh(_) ->
+    [].
+
+format_err_trx_canl(<<_,_,_,_,Trx,_/binary>>) ->
+    CanL = [{?CAN_ERR_TRX_UNSPEC, unspecified},
+	    {?CAN_ERR_TRX_CANL_NO_WIRE, canl_no_wire},
+	    {?CAN_ERR_TRX_CANL_SHORT_TO_BAT, canl_short_to_bat},
+	    {?CAN_ERR_TRX_CANL_SHORT_TO_VCC, canl_short_to_vcc},
+	    {?CAN_ERR_TRX_CANL_SHORT_TO_GND, canl_short_to_gnd},
+	    {?CAN_ERR_TRX_CANL_SHORT_TO_CANH,canl_short_to_canh}],
+    [{trx_canl, format_enum(Trx band 16#0f, CanL)}];
+format_err_trx_canl(_) ->
+    [].
+
+
+format_bit_flags(Flags, EnumList) ->
+    lists:foldl(fun({Bit,Flag}, Acc) when Flags band Bit =:= Bit -> [Flag|Acc];
+		   (_, Acc) -> Acc
+		end, [], EnumList).
+
+format_enum(Data, EnumList) ->
+    format_enum(Data, EnumList, undefined).
+
+format_enum(Data, EnumList, Default) ->
+    case lists:keyfind(Data,1,EnumList) of
+	false -> Default;
+	{_,Value} -> Value
+    end.
+
+print_error_frame(Frame) ->
+    io:put_chars(format_error_frame(Frame)).
+
