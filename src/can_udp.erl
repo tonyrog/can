@@ -435,7 +435,7 @@ handle_info({udp,U,_Addr,Port,Data}, S) when S#s.in == U ->
 		    ?debug("CUd=~8.16.0B, Flags=~4.16.0B, FLen=~4.16.0B, CData=~p\n",
 			   [CId,Flags,FLen,CData]),
 		    Ts = ?CAN_NO_TIMESTAMP, %% fixme: add timestamp
-		    if Flags band ?FLAG_FD -> 
+		    if Flags band ?FLAG_FD =/= 0 -> 
 			    {noreply,input(CId bor ?CAN_FD_FLAG,FLen,CData,Ts,S)};
 		       true ->
 			    {noreply, input(CId,FLen,CData,Ts,S)}
