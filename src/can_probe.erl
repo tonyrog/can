@@ -62,19 +62,14 @@ loop(T0, FrameCount) ->
     end.
 
 format_frame(Frame) ->
-    ["id: ", if ?is_can_frame_eff(Frame) ->
-		    io_lib:format("~8.16.0B", 
-				  [Frame#can_frame.id band ?CAN_EFF_MASK]);
-		true ->
-		     io_lib:format("~3.16.0B", 
-				   [Frame#can_frame.id band ?CAN_SFF_MASK])
-	     end,
-     " len:", io_lib:format("~w", [Frame#can_frame.len]),
-     if ?is_can_frame_eff(Frame) ->
-	     " ext";
+    [if ?is_can_frame_eff(Frame) ->
+	     io_lib:format("xid: ~8.16.0B", 
+			   [Frame#can_frame.id band ?CAN_EFF_MASK]);
 	true ->
-	     ""
+	     io_lib:format("id: ~3.16.0B", 
+			   [Frame#can_frame.id band ?CAN_SFF_MASK])
      end,
+     " len:", io_lib:format("~w", [Frame#can_frame.len]),
      if ?is_can_frame_fd(Frame) ->
 	     " fd";
 	true ->
@@ -91,7 +86,7 @@ format_frame(Frame) ->
 	     [" data:", format_data(Frame#can_frame.data)]
      end,
      if ?is_can_valid_timestamp(Frame) ->
-	     ["ts:", io_lib:format("~w", [Frame#can_frame.ts])];
+	     [" ts:", io_lib:format("~w", [Frame#can_frame.ts])];
 	true -> []
      end
     ].
