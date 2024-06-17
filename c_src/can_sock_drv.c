@@ -477,9 +477,12 @@ static ErlDrvSSizeT can_sock_drv_ctl(ErlDrvData d,
 		 (struct sockaddr *)&addr, sizeof(addr)) < 0)
 	    return ctl_reply_error(errno, rbuf, rsize);
 	ctx->intf = index;
-	if (ioctl(INT_EVENT(ctx->sock), SIOCGIFMTU, (char *)&ifreq) >= 0) {
+	if (ioctl(INT_EVENT(ctx->sock), SIOCGIFMTU, (char *)&ifreq) < 0) {
+	    DEBUGF("MTU read error = %d", errno);
+	}
+	else {
 	    ctx->mtu = ifreq.ifr_mtu;
-	    DEBUGF("detected MTU size = %d", ctx->mtu);
+	    DEBUGF("bind MTU size = %d", ctx->mtu);
 	}
 	driver_select(ctx->port,ctx->sock,ERL_DRV_READ,1);
 	return ctl_reply_ok(rbuf, rsize);
@@ -537,10 +540,14 @@ static ErlDrvSSizeT can_sock_drv_ctl(ErlDrvData d,
 	}
     }
     case CAN_SOCK_DRV_CMD_GET_MTU: { // get mtu and refresh!
-	struct ifreq ifreq;
-	if (ioctl(INT_EVENT(ctx->sock), SIOCGIFMTU, (char *)&ifreq) >= 0) {
-	    ctx->mtu = ifreq.ifr_mtu;
+	struct ifreq ifreq;	
+	memset(&ifreq, 0, sizeof(ifreq));
+	if (ioctl(INT_EVENT(ctx->sock), SIOCGIFMTU, (char *)&ifreq) < 0) {
+	    DEBUGF("MTU read error = %d", errno);
+	}
+	else {
 	    DEBUGF("detected MTU size = %d", ctx->mtu);
+	    ctx->mtu = ifreq.ifr_mtu;
 	}
 	return ctl_reply_u32(ctx->mtu, rbuf, rsize);
     }

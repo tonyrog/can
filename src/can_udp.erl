@@ -40,7 +40,7 @@
 	 terminate/2, code_change/3]).
 
 -export([reuse_port/0]).
-
+-export([lookup_ip/2, lookup_ifaddr/2]).
 %% Test API
 
 -export([dump/1]).
@@ -253,22 +253,33 @@ init([BusId, Opts]) ->
 		     ?warning("No such interface ~p",[LAddr0]),
 		    {0,0,0,0}
 	    end,
-    RAddr = ?CAN_MULTICAST_IF,
+    RAddr = LAddr, %% ?CAN_MULTICAST_IF,
 
     SendOpts = [{active,false},{multicast_if,LAddr},
 		{multicast_ttl,Mttl},{multicast_loop,true}],
 
-    RecvOpts = [{reuseaddr,true},{mode,binary},{active,false},
-		{ifaddr,RAddr}] ++reuse_port(),
+    RecvOpts = [{reuseaddr,true},{ifaddr,RAddr}] ++reuse_port(),
 
-    MultiOpts = [{add_membership,{MAddr,LAddr}},{active,true}],
+    MultiOpts = [{add_membership,{MAddr,LAddr}}],
     Name = proplists:get_value(name, Opts, atom_to_list(?MODULE) ++ "-" ++
 				   integer_to_list(BusId)),
     case gen_udp:open(0, SendOpts) of
 	{ok,Out} ->
 	    {ok,OutPort} = inet:port(Out),
-	    case catch gen_udp:open(MPort,RecvOpts++MultiOpts) of
+	    OutOpts = [active,mode,multicast_if,multicast_ttl,
+		       multicast_loop,reuseaddr],
+	    {ok,OutName} = inet:sockname(Out),
+	    io:format("output options: port=~p, addr=~p, ~p\n", 
+		      [OutPort,OutName,get_sock_opts(Out, OutOpts)]),
+	    case catch gen_udp:open(MPort,RecvOpts++MultiOpts++
+					[{mode,binary},{active,true}]) of
 		{ok,In} ->
+		    {ok,InPort} = inet:port(In),
+		    {ok,InName} = inet:sockname(In),
+		    InOpts = [active,mode,multicast_if,multicast_ttl,
+			      multicast_loop,reuseaddr],
+		    io:format("input options: port=~p, addr=~p, ~p\n", 
+			      [InPort, InName, get_sock_opts(In, InOpts)]),
 		    Param = #{ mod=>?MODULE,
 			       device => MAddr,
 			       index => BusId,
@@ -308,7 +319,20 @@ init([BusId, Opts]) ->
 	Error ->
 	    {stop, Error}
     end.
-    
+
+
+get_sock_opts(Socket, [OptName|Options]) ->    
+    case inet:getopts(Socket, [OptName]) of
+	{ok,[]} -> 
+	    [{OptName,error}|get_sock_opts(Socket, Options)];
+	{ok,[{OptName,Value}]} ->
+	    [{OptName,Value}|get_sock_opts(Socket, Options)];
+	{error,Reason} ->
+	    [{OptName,{error,Reason}}|get_sock_opts(Socket, Options)]
+    end;
+get_sock_opts(_Socket, []) -> 
+    [].
+	
 %%--------------------------------------------------------------------
 %% Function: %% handle_call(Request, From, State) -> {reply, Reply, State} |
 %%                                      {reply, Reply, State, Timeout} |

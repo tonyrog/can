@@ -52,7 +52,7 @@
 -define(DEFAULT_IF,0).
 
 -define(verbose(F, A), ok).
-%% -define(verbose(F, A), io:format((F),(A))).
+%%-define(verbose(F, A), io:format((F),(A))).
 
 -type can_sock_optname() ::
 	device | name | bitrate | datarate | 
@@ -233,7 +233,16 @@ init([BusId,Opts]) ->
     ListenOnly = proplists:get_value(listen_only, Opts, false),
     RestartMs = proplists:get_value(restart_ms, Opts, 0),
 
-    {ok,_NRef} = netlink:subscribe(Device, flags, [flush]),
+    {State0,DeviceName0} = 
+	case Device of 
+	    "vcan"++_ ->
+		%% simulate setup
+		self() ! {netlink, undefined, Device, flags, [], [up]},
+		{setup, Device};
+	    _ ->
+		{ok, _NRef} = netlink:subscribe(Device, flags, [flush]),
+		{init, undefined}
+	end,
 
     Param = #{ mod=>?MODULE,
 	       device => Device,
@@ -247,7 +256,9 @@ init([BusId,Opts]) ->
 	       fd => FD },
     case join(Router, Pid, Param) of
 	{ok, If} when is_integer(If) ->
-	    S = #s{ name = Name,
+	    S = #s{ state = State0,
+		    name = Name,
+		    device_name = DeviceName0,
 		    receiver = {Router,Pid,If},
 		    device = Device,
 		    intf = If,
