@@ -26,7 +26,6 @@
 
 -behaviour(gen_server).
 
-%% -define(DEBUG, true).
 -include("../include/can.hrl").
 
 %% API

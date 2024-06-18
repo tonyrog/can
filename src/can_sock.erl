@@ -25,7 +25,6 @@
 
 -behaviour(gen_server).
 
-%%-define(DEBUG, true).
 -include("../include/can.hrl").
 
 %% API
@@ -226,7 +225,7 @@ init([BusId,Opts]) ->
     Name = proplists:get_value(name, Opts, atom_to_list(?MODULE) ++ "-" ++
 				   integer_to_list(BusId)),
     BitRate = proplists:get_value(bitrate, Opts, ?DEFAULT_BITRATE),
-    DataRate = proplists:get_value(bitrate, Opts, ?DEFAULT_DATARATE),
+    DataRate = proplists:get_value(datarate, Opts, ?DEFAULT_DATARATE),
     BitRates = proplists:get_value(bitrates, Opts, ?DEFAULT_BITRATES),
     DataRates = proplists:get_value(datarates, Opts, ?DEFAULT_DATARATES),
     FD = proplists:get_value(fd, Opts, false),
