@@ -266,20 +266,20 @@ init([BusId, Opts]) ->
     case gen_udp:open(0, SendOpts) of
 	{ok,Out} ->
 	    {ok,OutPort} = inet:port(Out),
-	    OutOpts = [active,mode,multicast_if,multicast_ttl,
-		       multicast_loop,reuseaddr],
-	    {ok,OutName} = inet:sockname(Out),
-	    io:format("output options: port=~p, addr=~p, ~p\n", 
-		      [OutPort,OutName,get_sock_opts(Out, OutOpts)]),
+	    %% OutOpts = [active,mode,multicast_if,multicast_ttl,
+	    %%   multicast_loop,reuseaddr],
+	    %% {ok,OutName} = inet:sockname(Out),
+	    %% io:format("output options: port=~p, addr=~p, ~p\n", 
+	    %% [OutPort,OutName,get_sock_opts(Out, OutOpts)]),
 	    case catch gen_udp:open(MPort,RecvOpts++MultiOpts++
 					[{mode,binary},{active,true}]) of
 		{ok,In} ->
-		    {ok,InPort} = inet:port(In),
-		    {ok,InName} = inet:sockname(In),
-		    InOpts = [active,mode,multicast_if,multicast_ttl,
-			      multicast_loop,reuseaddr],
-		    io:format("input options: port=~p, addr=~p, ~p\n", 
-			      [InPort, InName, get_sock_opts(In, InOpts)]),
+		    %% {ok,InPort} = inet:port(In),
+		    %% {ok,InName} = inet:sockname(In),
+		    %% InOpts = [active,mode,multicast_if,multicast_ttl,
+		    %%  multicast_loop,reuseaddr],
+		    %% io:format("input options: port=~p, addr=~p, ~p\n", 
+		    %%  [InPort, InName, get_sock_opts(In, InOpts)]),
 		    Param = #{ mod=>?MODULE,
 			       device => MAddr,
 			       index => BusId,
