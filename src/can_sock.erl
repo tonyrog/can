@@ -31,7 +31,7 @@
 -export([start/0, start/1, start/2]).
 -export([start_link/0, start_link/1, start_link/2]).
 -export([stop/1]).
--export([get_bitrate/1, set_bitrate/2]).
+-export([get_bitrate/1, set_bitrate/2, set_bitrate/3]).
 -export([getopts/2, setopts/2, optnames/0]).
 -export([pause/1, resume/1, ifstatus/1]).
 
@@ -45,13 +45,16 @@
 
 -define(DEFAULT_BITRATE,  250000).
 -define(DEFAULT_DATARATE, 1000000).
--define(DEFAULT_BITRATES, [100000, 125000, 250000, 500000, 800000, 1000000]).
--define(DEFAULT_DATARATES, [100000, 125000, 250000, 500000, 800000, 1000000,
-			    2000000, 3000000, 4000000, 5000000]).
+%% 0 = any rate may be set (kernel calculates bit timing), the
+%% rest of the list are just suggestions. See can:any_rate/1
+-define(DEFAULT_BITRATES, [0, 100000, 125000, 250000, 500000, 800000,
+			   1000000]).
+-define(DEFAULT_DATARATES, [0, 100000, 125000, 250000, 500000, 800000,
+			    1000000, 2000000, 3000000, 4000000, 5000000]).
 -define(DEFAULT_IF,0).
 
 -define(verbose(F, A), ok).
-%%-define(verbose(F, A), io:format((F),(A))).
+%% -define(verbose(F, A), io:format((F),(A))).
 
 -type can_sock_optname() ::
 	device | name | bitrate | datarate | 
@@ -64,6 +67,8 @@
 	{bitrates, [CANBitrate::integer()]} |
 	{datarate, CANDatarate::integer()} |
 	{datarates, [CANDatarate::integer()]} |
+	{sample_point, float()} |
+	{data_sample_point, float()} |
 	{pause,   Pause::boolean()} |
 	{fd, Enable::boolean()} |
 	{mtu, Mtu::16|72} |  %% normal CAN or CANFD
@@ -94,8 +99,10 @@
 	 intf,                      %% out-bound interface
 	 bitrate :: integer(),      %% CAN bus speed
 	 bitrates :: [integer()],   %% CAN bus speed
+	 sample_point :: float(),   %% 0.5 .. 0.9
 	 datarate :: integer(),     %% CAN bus data speed (FD)
 	 datarates :: [integer()],  %% CAN bus data speed (FD)
+	 data_sample_point :: float(), %% 0.5 .. 0.9
 	 mtu :: undefined|16|72,    %% Link MTU size
 	 fd :: boolean(),           %% Request Can FD support
 	 listen_only :: boolean(),  %% Listen only 
@@ -180,6 +187,14 @@ set_bitrate(Id, Rate) ->
 	    {error, einval}
     end.	
 
+set_bitrate(Id, Rate, SamplePoint) ->
+    case setopts(Id, [{bitrate, Rate}, {sample_point, SamplePoint}]) of
+	[{bitrate, Result}, {sample_point, _Pt}] ->
+	    Result;
+	[] ->
+	    {error, einval}
+    end.	
+
 -spec get_bitrate(Id::cid()) -> 
 	  {ok,BitRate::integer()} | {error,Reason::term()}.
 
@@ -193,6 +208,7 @@ get_bitrate(Id) ->
 
 optnames() ->
     [ device, name, bitrate, datarate, bitrates, datarates,
+      sample_point, data_sample_point,
       pause, fd, mtu, listen_only, restart_ms ].
 
 -spec getopts(Id::cid(), Opts::[can_sock_optname()]) ->
@@ -228,6 +244,8 @@ init([BusId,Opts]) ->
     DataRate = proplists:get_value(datarate, Opts, ?DEFAULT_DATARATE),
     BitRates = proplists:get_value(bitrates, Opts, ?DEFAULT_BITRATES),
     DataRates = proplists:get_value(datarates, Opts, ?DEFAULT_DATARATES),
+    SamplePoint = proplists:get_value(sample_point, Opts, undefined),
+    DataSamplePoint = proplists:get_value(data_sample_point, Opts, undefined),
     FD = proplists:get_value(fd, Opts, false),
     ListenOnly = proplists:get_value(listen_only, Opts, false),
     RestartMs = proplists:get_value(restart_ms, Opts, 0),
@@ -251,6 +269,8 @@ init([BusId,Opts]) ->
 	       datarate => DataRate,
 	       bitrates => BitRates,
 	       datarates => DataRates,
+	       sample_point => SamplePoint,
+	       data_sample_point => DataSamplePoint,
 	       listen_only => ListenOnly,
 	       fd => FD },
     case join(Router, Pid, Param) of
@@ -263,9 +283,11 @@ init([BusId,Opts]) ->
 		    intf = If,
 		    bitrate = BitRate,
 		    bitrates = BitRates,
+		    sample_point = SamplePoint,
 		    fd = FD,              %% request FD support
 		    datarate = DataRate,  %% requested data rate (FD)
 		    datarates = DataRates,  %% requested data rate (FD)
+		    data_sample_point = DataSamplePoint,
 		    listen_only = ListenOnly,
 		    restart_ms = RestartMs,
 		    pause = Pause,
@@ -303,6 +325,8 @@ handle_call({getopts, Opts},_From,S) ->
 	     (datarate) -> {datarate,S#s.datarate};
 	     (bitrates) -> {bitrates,S#s.bitrates};
 	     (datarates) -> {datarates,S#s.datarates};
+	     (sample_point) -> {sample_point,S#s.sample_point};
+	     (data_sample_point) -> {data_sample_point,S#s.data_sample_point};
 	     (fd) -> {fd,S#s.fd};
 	     (mtu) -> 
 		  if is_port(S#s.port) ->
@@ -357,7 +381,11 @@ handle_call(resume, _From, S=#s {pause = false}) ->
     {reply, ok, S};
 handle_call(ifstatus, _From, S=#s {pause = Pause}) ->
     ?debug("ifstatus.", []),
-    {reply, {ok, if Pause -> paused; true -> active end}, S};
+    Status = if Pause -> paused;
+		S#s.state =:= running -> active;
+		true -> faulty  %% link not (yet) up
+	     end,
+    {reply, {ok, Status}, S};
 handle_call(dump, _From, S) ->
     ?debug("dump.", []),
     {reply, {ok, S}, S};
@@ -560,10 +588,10 @@ code_change(_OldVsn, State, _Extra) ->
 %% FIXME; device change require new subscription and restart! (and re-join!!)
 %%        name change require update of join Param?
 changeopts(Opts, S) ->
-    ?debug("can_sock: changeopts ~p\n", [Opts]),
-    changeopts_(Opts, [], false, S).
+    ?verbose("can_sock: changeopts ~p\n", [Opts]),
+    changeopts_(Opts, false, [], S).
 
-changeopts_([{Key,Value}|Opts], Acc, SetLink, S) ->
+changeopts_([{Key,Value}|Opts], SetLink, Acc, S) ->
     case Key of
 	device ->
 	    changeopts_(Opts, SetLink, [{Key,ok}|Acc], S#s {device=Value});
@@ -573,6 +601,11 @@ changeopts_([{Key,Value}|Opts], Acc, SetLink, S) ->
 	    changeopts_(Opts, true, [{Key,ok}|Acc], S#s {bitrate=Value });
 	datarate ->
 	    changeopts_(Opts, true, [{Key,ok}|Acc], S#s {datarate=Value });
+	sample_point ->
+	    changeopts_(Opts, true, [{Key,ok}|Acc], S#s {sample_point=Value });
+	data_sample_point ->
+	    changeopts_(Opts, true, [{Key,ok}|Acc], 
+			S#s {data_sample_point=Value });
 	fd -> 
 	    changeopts_(Opts, true, [{Key,ok}|Acc], S#s { fd=Value });
 	listen_only ->
@@ -588,13 +621,50 @@ changeopts_([], true, Acc, S) ->
 changeopts_([], false, Acc, S) ->
     {lists:reverse(Acc), S}.
 
-
 setup(S, Dev)  when S#s.state =:= init; S#s.state =:= change ->
     _Res = set_link_opts(S, Dev),
     ?debug("set = ~p", [_Res]),
+    S1 = sync_link_rates(S, Dev),
     _Res1 = can_sock_link:up(Dev),
     ?debug("up = ~p", [_Res1]),
-    S#s { state = setup, device_name = Dev }.
+    S1#s { state = setup, device_name = Dev }.
+
+%% Read back the bit timing actually used by the kernel. When a
+%% requested rate could not be set the old rate is still active,
+%% report the real values so the user see what is going on.
+sync_link_rates(S, Dev="vcan"++_) ->
+    S#s { device_name = Dev };
+sync_link_rates(S, Dev) ->
+    case get_link_opts(Dev) of
+	{ok, IF} when is_map(IF) ->
+	    Info = maps:get(info_data, maps:get(linkinfo, IF, #{}), #{}),
+	    BitRate = link_rate(bittiming, Info, S#s.bitrate),
+	    DataRate = if S#s.fd -> link_rate(data_bittiming, Info,
+					       S#s.datarate);
+			  true -> S#s.datarate
+		       end,
+	    if BitRate =/= S#s.bitrate; DataRate =/= S#s.datarate ->
+		    ?warning("~s: requested bitrate=~w,datarate=~w "
+			     "got bitrate=~w,datarate=~w",
+			     [Dev, S#s.bitrate, S#s.datarate,
+			      BitRate, DataRate]),
+		    send_state(#{ bitrate => BitRate, datarate => DataRate },
+			       S#s.receiver),
+		    S#s { bitrate = BitRate, datarate = DataRate };
+	       true ->
+		    S
+	    end;
+	_ ->
+	    S
+    end.
+
+link_rate(Key, Info, Default) when is_map(Info) ->
+    case maps:get(Key, Info, undefined) of
+	#{ bitrate := Rate } when is_integer(Rate), Rate > 0 -> Rate;
+	_ -> Default
+    end;
+link_rate(_Key, _Info, Default) ->
+    Default.
 
 running(S) when S#s.state =:= setup ->
     case can_sock_drv:open() of
@@ -675,26 +745,33 @@ set_link_opts(S, Dev="vcan"++_) -> %% vcan
     end;
 set_link_opts(S, Dev) ->
     Fd = if S#s.fd -> true; true -> false end,
-    Res = 
-	if S#s.fd ->
-		can_sock_link:set(Dev,
-				  [{type, "can"},
-				   {fd,Fd},
-				   {bitrate,S#s.bitrate},
-				   {dbitrate,S#s.datarate},
-				   {listen_only,S#s.listen_only},
-				   {restart_ms,S#s.restart_ms}]);
-	   true ->
-		can_sock_link:set(Dev,
-				  [{type, "can"},
-				   {fd,false},
-				   {bitrate,S#s.bitrate},
-				   {listen_only,S#s.listen_only},
-				   {restart_ms,S#s.restart_ms}])
-	end,
+    BitRateOpts = case S#s.sample_point of
+		     undefined -> 
+			 [{bitrate,S#s.bitrate}];
+		     Pt ->
+			 [{bitrate,S#s.bitrate},{sample_point,Pt}]
+		 end,
+    DataBitRateOpts = case {S#s.fd,S#s.data_sample_point} of
+			 {true, undefined} -> 
+			     [{dbitrate,S#s.datarate}];
+			 {true, DPt} ->
+			     [{dbitrate,S#s.datarate},
+			      {dsample_point,DPt}];
+			 {false, _} ->
+			     []
+		     end,
+    Res = can_sock_link:set(Dev,
+			    [{type, "can"},
+			     {fd,Fd}] ++
+				BitRateOpts ++
+				DataBitRateOpts ++
+				[{listen_only,S#s.listen_only},
+				 {restart_ms,S#s.restart_ms}]),
     send_state(#{ fd=>Fd,
 		  bitrate=>S#s.bitrate,
 		  datarate=>S#s.datarate,
+		  sample_point=>S#s.sample_point,
+		  data_sample_point=>S#s.data_sample_point,
 		  listen_only=>S#s.listen_only}, 
 	       S#s.receiver),
     Res.

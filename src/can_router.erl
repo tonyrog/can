@@ -62,25 +62,6 @@
 
 -define(SERVER, can_router).
 
--type ifparam()::#{ mod => atom(),
-		    device => string(),
-		    index  => integer(),
-		    name   => string(),
-		    fd     => boolean()
-		  }.
-
--record(can_if,
-	{
-	 pid   :: pid(),        %% can interface pid
-	 mod   :: atom(),       %% current
-	 id    :: integer(),    %% interface id
-	 name  :: string(),     %% name for easier identification
-	 mon   :: reference(),  %% can app monitor
-	 param :: ifparam(),    %% all params
-	 atime,                 %% last input activity time
-	 state = undefined
-	}).
-
 -record(can_app,
 	{
 	 pid,       %% can app pid

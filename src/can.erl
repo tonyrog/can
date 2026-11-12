@@ -34,12 +34,43 @@
 
 -export([install/0, install_cmds/0]).
 -export([format_error_frame/1, print_error_frame/1]).
+-export([any_rate/1, rates/1, rate_supported/2]).
 
 -include("../include/can.hrl").
 
 start() ->
     application:start(uart),
     application:start(can).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Bitrate/datarate lists returned by drivers (bitrates, datarates)
+%% may contain the special rate 0, meaning that the driver can set
+%% any rate (within hardware limits). The other entries are then
+%% just suggestions. A list without 0 is the exact set of rates
+%% supported by the driver.
+%% @end
+%%--------------------------------------------------------------------
+-spec any_rate(Rates::[non_neg_integer()]) -> boolean().
+any_rate(Rates) when is_list(Rates) ->
+    lists:member(0, Rates);
+any_rate(_) ->
+    false.
+
+%% @doc Return the sorted list of real rates (without the 0 marker)
+-spec rates(Rates::[non_neg_integer()]) -> [pos_integer()].
+rates(Rates) when is_list(Rates) ->
+    lists:usort([R || R <- Rates, is_integer(R), R > 0]);
+rates(_) ->
+    [].
+
+%% @doc Check if Rate may be set given the rate list from a driver
+-spec rate_supported(Rate::integer(), Rates::[non_neg_integer()]) ->
+	  boolean().
+rate_supported(Rate, Rates) when is_integer(Rate), Rate > 0 ->
+    any_rate(Rates) orelse lists:member(Rate, Rates);
+rate_supported(_Rate, _Rates) ->
+    false.
 
 %%--------------------------------------------------------------------
 %% @doc

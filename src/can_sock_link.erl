@@ -9,9 +9,9 @@
 
 -export([up/1, down/1]).
 -export([setup/2]).
--export([set_bitrate/2]).
--export([set_dbitrate/2]).
--export([set_fd_bitrate/3]).
+-export([set_bitrate/2, set_bitrate/3]).
+-export([set_dbitrate/2, set_dbitrate/3]).
+-export([set_fd_bitrate/3, set_fd_bitrate/5]).
 -export([set_listen_only/2]).
 -export([set/2]).
 -export([is_suid/1, ipset_exec/0]).
@@ -20,12 +20,26 @@
 -define(verbose(F, A), ok).
 %% -define(verbose(F, A), io:format((F),(A))).
 
+%%
+%% Sample points should be a value in range 0.750 and 0.850 
+%% CANFD dbitrate should be close to 80.0% 
+%%
 set_bitrate(Dev, BitRate) ->
     setup(Dev, [{bitrate,BitRate}]).
+set_bitrate(Dev, BitRate, SamplePoint) ->
+    setup(Dev, [{bitrate,BitRate},{sample_point,SamplePoint}]).
+
 set_dbitrate(Dev, BitRate) ->
     setup(Dev, [{dbitrate,BitRate}]).
+set_dbitrate(Dev, BitRate,SamplePoint) ->
+    setup(Dev, [{dbitrate,BitRate},{dsample_point,SamplePoint}]).
+
 set_fd_bitrate(Dev, BitRate, DBitRate) ->
     setup(Dev, [{bitrate,BitRate},{dbitrate,DBitRate},{fd,on}]).
+
+set_fd_bitrate(Dev, BitRate, SamplePoint, DBitRate, DSamplePoint) ->
+    setup(Dev, [{bitrate,BitRate},{sample_point,SamplePoint},
+		{dbitrate,DBitRate},{dsample_point,DSamplePoint},{fd,on}]).
 
 set_listen_only(Dev, Enable) ->
     setup(Dev, [{listen_only,Enable}]).
@@ -100,9 +114,16 @@ setting(bitrate,Rate) when is_integer(Rate), Rate > 0 ->
     ["bitrate ", integer_to_list(Rate)];
 setting(dbitrate,Rate) when is_integer(Rate), Rate > 0 ->
     ["dbitrate ", integer_to_list(Rate)];
+setting(sample_point,P) when is_float(P), P >= 0, P =< 1.0 ->
+    ["sample-point ", float01_to_list(P)];
+setting(dsample_point,P) when is_float(P), P >= 0, P =< 1.0 ->
+    ["dsample-point ", float01_to_list(P)];
 setting(fd,true) -> ["fd ", "on"];
 setting(fd,false) -> ["fd ", "off"];
 setting(listen_only,true) -> ["listen-only ", "on"];
 setting(listen_only,false) -> ["listen-only ", "off"];
 setting(restart_ms,Ms) when is_integer(Ms), Ms>=0 -> 
     ["restart-ms ", integer_to_list(Ms)].
+
+float01_to_list(F) when is_float(F), F >= 0.0, F =< 1.0 ->
+    [$0,$.|integer_to_list(round(F * 1000))].

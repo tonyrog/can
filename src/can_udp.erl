@@ -69,7 +69,9 @@
 	 fs,          %% can_filter:new()
 	 fd = false,  %% FD support
 	 bitrate = ?DEFAULT_BITRATE,
-	 datarate = ?DEFAULT_DATARATE
+	 datarate = ?DEFAULT_DATARATE,
+	 sample_point :: float(),   %% 0.5 .. 0.9
+	 data_sample_point :: float() %% 0.5 .. 0.9
 	}).
 
 %% MAC specific reuseport options
@@ -89,9 +91,10 @@
 -define(FLAG_FD,   16#0001).
 -define(FLAG_NONE, 16#0000).
 
--define(SUPPORTED_BITRATES, [10000,20000,50000,100000,125000,
+%% 0 = any rate (udp do not care), see can:any_rate/1
+-define(SUPPORTED_BITRATES, [0,10000,20000,50000,100000,125000,
 			     250000,500000,800000,1000000]).
--define(SUPPORTED_DATARATES, [10000,20000,50000,100000,125000,
+-define(SUPPORTED_DATARATES, [0,10000,20000,50000,100000,125000,
 			      250000,500000,800000,1000000,
 			      2000000,3000000,4000000,5000000]).
 -define(DEFAULT_BIT_RATE, 250000).
@@ -100,6 +103,7 @@
 
 -type can_udp_optname() ::
 	device | name | bitrate | datarate | bitrates | datarates |
+	sample_point | data_sample_point |
 	maddr | ifaddr | ttl | pause | fd.
 
 -type can_udp_option() ::
@@ -109,6 +113,8 @@
 	{ttl,      integer()} |
 	{bitrate, CANBitrate::integer()} |
 	{datarate, CANDatarate::integer()} |
+	{sample_point, float()} |
+	{data_sample_point, float()} |
 	{pause,    Pause::boolean()} |
 	{fd,       FD::boolean()}.
 
@@ -203,6 +209,7 @@ get_bitrate(Id) ->
 
 optnames() ->
     [ device, name, bitrate, datarate, bitrates, datarates,
+      sample_point, data_sample_point,
       maddr, ifaddr, ttl, pause, fd ].
 
 -spec getopts(Id::cid(), Opts::[can_udp_optname()]) ->
@@ -237,6 +244,8 @@ init([BusId, Opts]) ->
     Pause = proplists:get_value(pause, Opts, false),
     BitRate = proplists:get_value(bitrate,Opts,?DEFAULT_BITRATE),
     DataRate = proplists:get_value(datarate,Opts,?DEFAULT_DATARATE),
+    SamplePoint = proplists:get_value(sample_point,Opts,undefined),
+    DataSamplePoint = proplists:get_value(data_sample_point,Opts,undefined),
     FD    = proplists:get_value(fd, Opts, false),
     LAddr = if is_tuple(LAddr0) -> 
 		    LAddr0;
@@ -288,6 +297,8 @@ init([BusId, Opts]) ->
 			       bitrates => ?SUPPORTED_BITRATES,
 			       datarate => ?DEFAULT_DATA_RATE,
 			       datarates => ?SUPPORTED_DATARATES,
+			       sample_point => SamplePoint,
+			       data_sample_point => DataSamplePoint,
 			       listen_only => false,
 			       fd => FD },
 		    case join(Router, Pid, Param) of
@@ -304,6 +315,8 @@ init([BusId, Opts]) ->
 				     fd=FD,
 				     bitrate=BitRate,
 				     datarate=DataRate,
+				     sample_point = SamplePoint,
+				     data_sample_point = DataSamplePoint,
 				     fs=can_filter:new()
 				   }};
 			{error, Reason} = Error ->
@@ -320,7 +333,7 @@ init([BusId, Opts]) ->
 	    {stop, Error}
     end.
 
-
+-ifdef(not_used).
 get_sock_opts(Socket, [OptName|Options]) ->    
     case inet:getopts(Socket, [OptName]) of
 	{ok,[]} -> 
@@ -332,6 +345,7 @@ get_sock_opts(Socket, [OptName|Options]) ->
     end;
 get_sock_opts(_Socket, []) -> 
     [].
+-endif.
 	
 %%--------------------------------------------------------------------
 %% Function: %% handle_call(Request, From, State) -> {reply, Reply, State} |
@@ -361,6 +375,8 @@ handle_call({getopts, Opts},_From,S) ->
 			    end;
 	      (bitrates) -> {bitrates,?SUPPORTED_BITRATES};
 	      (datarates) -> {datarates,?SUPPORTED_DATARATES};
+	      (sample_point) -> {sample_point,S#s.sample_point};
+	      (data_sample_point) -> {data_sample_point,S#s.data_sample_point};
 	      (ttl)    -> {ttl,S#s.ttl};
 	      (mport)  -> {mport,S#s.mport};
 	      (fd)     -> {fd,S#s.fd};
@@ -516,6 +532,11 @@ changeopts_([{Key,Value}|Opts],Acc,S) ->
 	    changeopts_(Opts,[{Key,ok}|Acc],S#s{bitrate=Value});
 	datarate ->
 	    changeopts_(Opts,[{Key,ok}|Acc],S#s{datarate=Value});
+	sample_point ->
+	    changeopts_(Opts, [{Key,ok}|Acc], S#s {sample_point=Value });
+	data_sample_point ->
+	    changeopts_(Opts, [{Key,ok}|Acc], 
+			S#s {data_sample_point=Value });
 	_ ->
 	    changeopts_(Opts,[{Key,{error,einval}}|Acc],S)
     end;

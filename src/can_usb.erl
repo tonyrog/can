@@ -62,6 +62,7 @@
 -type cid() :: integer() | pid() | string().
 -define(is_cid(X),(is_integer((X)) orelse is_pid((X)) orelse is_list((X)))).
 
+-define(CAN_CLK, 16_000_000).
 
 -record(s, 
 	{
@@ -75,6 +76,7 @@
 	  offset,          %% Usb port offset
 	  baud_rate,       %% baud rate to canusb
 	  can_speed,       %% CAN bus speed
+	  sample_point :: float(),   %% 0.5 .. 0.9
 	  status_interval, %% Check status interval
 	  retry_interval,  %% Timeout for open retry
 	  retry_timer,     %% Timer reference for retry
@@ -96,9 +98,15 @@
 -define(SUPPORTED_BITRATES, [10000,20000,50000,100000,125000,
 			     250000,500000,800000,1000000]).
 -define(SUPPORTED_DATARATES, []).
+%% Rates reported to users, 0 = any rate (calculated with BTR0/BTR1)
+-define(REPORTED_BITRATES, [0|?SUPPORTED_BITRATES]).
+-define(DEFAULT_SAMPLE_POINT, 0.875).
+-define(MAX_RATE_ERROR, 0.005).  %% max 0.5% bitrate error
+
 
 -type can_usb_optname() ::
 	device | name | baud | bitrate | bitrates | datarates | 
+	sample_point | data_sample_point |
 	status_interval | retry_interval | pause | fd.
 
 -type can_usb_option() ::
@@ -107,6 +115,8 @@
 	{baud,    DeviceBaud::integer()} |
 	{bitrate, CANBitrate::integer()} |
 	{datarate, CANDatarate::integer()} |
+	{sample_point, float()} |
+	{data_sample_point, float()} |
 	{status_interval, Time::timeout()} |
 	{retry_interval, Time::timeout()} |
 	{pause,   Pause::boolean()} |
@@ -236,6 +246,7 @@ dump(Id) when is_integer(Id); is_pid(Id); is_list(Id) ->
 
 optnames() ->
     [ device, name, baud, bitrate, datarate, bitrates, datarates,
+      sample_point, data_sample_point, 
       status_interval, retry_interval, pause, fd ].
 
 -spec getopts(Id::cid(), Opts::[can_usb_optname()]) ->
@@ -278,6 +289,7 @@ init([BusId,Opts]) ->
 						?DEFAULT_RETRY_INTERVAL),
 	    Pause = proplists:get_value(pause, Opts, false),
 	    BitRate = proplists:get_value(bitrate,Opts,?DEFAULT_BITRATE),
+	    SamplePoint = proplists:get_value(sample_point,Opts,undefined),
 	    Interval = proplists:get_value(status_interval,Opts,
 					   ?DEFAULT_STATUS_INTERVAL),
 	    Speed = case proplists:get_value(baud, Opts) of
@@ -294,9 +306,11 @@ init([BusId,Opts]) ->
 		       device => Device,
 		       index => BusId,
 		       name => Name,  %% mod-<id>
-		       bitrates => ?SUPPORTED_BITRATES,
+		       bitrates => ?REPORTED_BITRATES,
 		       datarate => 0,
 		       datarates => ?SUPPORTED_DATARATES,
+		       sample_point => SamplePoint,
+		       data_sample_point => undefined,
 		       listen_only => false,
 		       fd => false },
 	    case join(Router, Pid, Param) of
@@ -307,6 +321,7 @@ init([BusId,Opts]) ->
 			    device = Device,
 			    offset = If,
 			    baud_rate = Speed,
+			    sample_point = SamplePoint,
 			    can_speed = BitRate,
 			    status_interval = Interval,
 			    retry_interval = RetryInterval,
@@ -346,9 +361,11 @@ handle_call({getopts, Opts},_From,S) ->
 	     (name)    -> {name,S#s.name};
 	     (bitrate) -> {bitrate,S#s.can_speed};
 	     (datarate) -> {datarate, undefined};
-	     (bitrates) -> {bitrates,?SUPPORTED_BITRATES};
+	     (bitrates) -> {bitrates,?REPORTED_BITRATES};
 	     (datarates) -> {datarates,?SUPPORTED_DATARATES};
 	     (baud)    -> {baud,S#s.baud_rate};
+	     (sample_point) -> {sample_point,S#s.sample_point};
+	     (data_sample_point) -> {data_sample_point,undefined};
 	     (status_interval) -> {status_interval,S#s.status_interval};
 	     (retry_interval) -> {retry_interval,S#s.retry_interval};
 	     (pause) -> {pause,S#s.pause};
@@ -500,7 +517,7 @@ handle_info({timeout,_TRef,status}, S) ->
 	{{error,Reason}, S1} ->
 	    ?error("can_usb: status error: ~p", [Reason]),
 	    canusb_sync_close(S1),
-	    canusb_set_bitrate(S, S#s.can_speed),
+	    canusb_set_bitrate(S1, S1#s.can_speed),
 	    command_open(S1),
 	    start_timer(S1#s.status_interval,status),
 	    {noreply,S1}
@@ -556,6 +573,15 @@ changeopts_([{Key,Value}|Opts],Acc,S) ->
 		    changeopts_(Opts, [{Key,ok}|Acc], 
 				  S#s { can_speed=Value })
 	    end;
+	sample_point ->
+	    case set_sample_point(Value, S) of
+		Error = {error,_} ->
+		    changeopts_(Opts, [{Key,Error}|Acc], S);
+		ok ->
+		    %% return "real" value?
+		    changeopts_(Opts, [{Key,ok}|Acc], 
+				  S#s { sample_point=Value })
+	    end;
 	baud ->
 	    changeopts_(Opts, [{Key,ok}|Acc], S#s { baud_rate=Value });
 	status_interval ->
@@ -573,11 +599,9 @@ changeopts_([], Acc, S) ->
 
 set_can_speed(Rate, S) ->
     if S#s.uart =:= undefined ->
-	    case speed_number(Rate) of
-		error ->
-		    {error,bad_bit_rate};
-		_ ->
-		    ok
+	    case bitrate_command(Rate, S#s.sample_point) of
+		{error,_}=Error -> Error;
+		_ -> ok
 	    end;
        true ->
 	    command_close(S),
@@ -591,6 +615,23 @@ set_can_speed(Rate, S) ->
 	    end
     end.
 
+set_sample_point(SamplePoint, S) ->
+    if S#s.uart =:= undefined ->    
+	    case bitrate_command(S#s.can_speed, SamplePoint) of
+		{error,_}=Error -> Error;
+		_ -> ok
+	    end;
+       true ->
+	    command_close(S),
+	    case canusb_set_bitrate(S,S#s.can_speed,SamplePoint) of
+		{ok, _Reply, S1} ->
+		    command_open(S1),
+		    ok;
+		{Error={error,_},S1} ->
+		    command_open(S1),
+		    Error
+	    end
+    end.
 
 open(S=#s {pause = true}) ->
     {ok, S};
@@ -734,6 +775,9 @@ to_hex(_V, 0, Acc) -> Acc;
 to_hex(V, N, Acc) ->
     to_hex(V bsr 4,N-1, [ihex(V band 16#f) | Acc]).
 
+to_hex(Byte) ->
+    tl(integer_to_list(16#100+(Byte band 16#ff), 16)).
+
 %% get 1-based element position or false if not found
 %% index(List, Elem) -> index(List, Elem, 1, false).
 %% get 0-bases element poistion or false if not found
@@ -756,12 +800,69 @@ speed_number(BitRate) ->
     index(?SUPPORTED_BITRATES, BitRate, 0, error).
 
 canusb_set_bitrate(S, BitRate) ->
-    case speed_number(BitRate) of
-	error ->
-	    {{error,bad_bit_rate}, S};
-	N ->
-	    command(S, [$S,N+$0])
+    canusb_set_bitrate(S, BitRate, S#s.sample_point).
+
+canusb_set_bitrate(S, BitRate, SamplePoint) ->
+    case bitrate_command(BitRate, SamplePoint) of
+	{error,_}=Error ->
+	    {Error, S};
+	Command ->
+	    command(S, Command)
     end.
+
+%% Standard rates without explicit sample point use the S<n> command,
+%% all other rates are calculated and set with sBTR0BTR1
+bitrate_command(BitRate, undefined) ->
+    case speed_number(BitRate) of
+	error -> btr_command(BitRate, ?DEFAULT_SAMPLE_POINT);
+	N -> [$S,N+$0]
+    end;
+bitrate_command(BitRate, SamplePoint) ->
+    btr_command(BitRate, SamplePoint).
+
+btr_command(BitRate, SamplePoint) ->
+    case sja1000_btr(BitRate, SamplePoint) of
+	{ok, BTR0, BTR1} ->
+	    ?debug("can_usb: bitrate=~w, btr0=~2.16.0B, btr1=~2.16.0B",
+		   [BitRate, BTR0, BTR1]),
+	    [$s,to_hex(BTR0),to_hex(BTR1)];
+	Error ->
+	    Error
+    end.
+
+%%
+%% Calculate SJA1000 bit timing registers
+%%   tq = 2*BRP/CAN_CLK  (BRP=1..64)
+%%   bit time = (1 + TSEG1 + TSEG2) tq, TSEG1=1..16, TSEG2=1..8
+%%   sample point = (1+TSEG1) / (1+TSEG1+TSEG2)
+%%   BTR0 = <<(SJW-1):2, (BRP-1):6>>
+%%   BTR1 = <<SAM:1, (TSEG2-1):3, (TSEG1-1):4>>
+%%
+sja1000_btr(BitRate, SamplePoint) when is_integer(BitRate), BitRate > 0,
+				       is_number(SamplePoint),
+				       SamplePoint > 0, SamplePoint < 1 ->
+    Clk = ?CAN_CLK div 2,
+    Cs = [{abs(Clk/(Brp*N) - BitRate)/BitRate, -N, Brp} ||
+	     Brp <- lists:seq(1, 64),
+	     N <- lists:seq(8, 25)],
+    case lists:sort(Cs) of
+	[{Err, NegN, Brp}|_] when Err =< ?MAX_RATE_ERROR ->
+	    N = -NegN,
+	    TSeg2 = max(2, min(8, round(N*(1-SamplePoint)))),
+	    TSeg1 = N - 1 - TSeg2,
+	    if TSeg1 > 16; TSeg1 < 1 ->
+		    {error, bad_bit_rate};
+	       true ->
+		    Sjw = min(4, TSeg2),
+		    BTR0 = ((Sjw-1) bsl 6) bor (Brp-1),
+		    BTR1 = ((TSeg2-1) bsl 4) bor (TSeg1-1),
+		    {ok, BTR0, BTR1}
+	    end;
+	_ ->
+	    {error, bad_bit_rate}
+    end;
+sja1000_btr(_BitRate, _SamplePoint) ->
+    {error, bad_bit_rate}.
 
 command_nop(S) ->
     command(S, "").

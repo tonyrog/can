@@ -179,6 +179,28 @@
 
 %% controller specific additional information / data[5..7] 
 
+%% can router interface record 
+%% used to check interface status
+
+-type ifparam()::#{ mod => atom(),
+		    device => string(),
+		    index  => integer(),
+		    name   => string(),
+		    fd     => boolean()
+		  }.
+
+-record(can_if,
+	{
+	 pid   :: pid(),        %% can interface pid
+	 mod   :: atom(),       %% current
+	 id    :: integer(),    %% interface id
+	 name  :: string(),     %% name for easier identification
+	 mon   :: reference(),  %% can app monitor
+	 param :: ifparam(),    %% all params
+	 atime,                 %% last input activity time
+	 state = undefined :: up | down
+	}).
+
 
 %% Macro wrapper!
 
